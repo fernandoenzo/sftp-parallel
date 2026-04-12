@@ -1,0 +1,31 @@
+Task 4: Implement subprocess wrapper for single sftp invocation
+==============================================================
+
+## Implementation
+
+### src/sftp_parallel/uploader.py
+- Added `run_sftp(host, batch_commands, timeout=10) -> tuple[bool, str]`
+- Builds command: ["sftp", "-N", "-o", f"ConnectTimeout={timeout}", "-o", "BatchMode=yes", "-b", "-", host]
+- Uses subprocess.run with input=batch_commands, capture_output=True, text=True
+- Handles FileNotFoundError (sftp not found), TimeoutExpired, and OSError
+- Returns (True, output) on returncode==0, (False, output) otherwise
+
+### tests/test_uploader.py (8 tests)
+- TestRunSftpSuccess: test_successful_upload, test_batch_commands_passed_as_stdin, test_connect_timeout_option
+- TestRunSftpFailure: test_failed_upload_nonzero_returncode, test_output_combines_stdout_and_stderr
+- TestRunSftpExceptions: test_sftp_binary_not_found, test_timeout_handling, test_os_error_handling
+
+## Test Results
+```
+$ python3 -m pytest tests/test_uploader.py -v
+8 passed in 0.01s
+
+$ python3 -m pytest -v
+17 passed in 0.02s (all existing + new tests pass)
+```
+
+## QA Verification
+- Mock tests pass: successful/failed upload, timeout, FileNotFoundError, OSError
+- No parallel uploads implemented (Task 8)
+- No file discovery implemented (Task 6)
+- No CLI integration (Task 5)
