@@ -114,3 +114,52 @@ def run_sftp(
     output: str = result.stdout + result.stderr
     success: bool = result.returncode == 0
     return success, output
+
+
+def run_parallel_uploads(
+    host: str,
+    buckets: list[list[str]],
+    timeout: int = 10,
+) -> tuple[bool, int]:
+    """Spawn parallel SFTP processes, one per bucket, and collect results."""
+    non_empty_buckets = [b for b in buckets if b]
+    if not non_empty_buckets:
+        return True, 0
+
+    proc_bucket_pairs: list[tuple[subprocess.Popen[str], str]] = []
+
+    for bucket in non_empty_buckets:
+        batch_commands: str = build_batch_commands(bucket)
+        cmd: list[str] = [
+            "sftp",
+            "-N",
+            "-o",
+            f"ConnectTimeout={timeout}",
+            "-o",
+            "BatchMode=yes",
+            "-b",
+            "-",
+            host,
+        ]
+        proc: subprocess.Popen[str] = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        proc_bucket_pairs.append((proc, batch_commands))
+
+    failed_count: int = 0
+    for proc, batch_cmds in proc_bucket_pairs:
+        try:
+            proc.communicate(input=batch_cmds)
+        except Exception:  # noqa: BLE001
+            failed_count += 1
+            continue
+
+        if proc.returncode != 0:
+            failed_count += 1
+
+    all_success: bool = failed_count == 0
+    return all_success, failed_count
