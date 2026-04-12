@@ -1,0 +1,43 @@
+# Task 3: sftp_escape() and batch command generation - Evidence
+
+## Implementation
+
+### sftp_escape(path: str) -> str
+- Escapes backslashes: \ -> \\
+- Escapes double quotes: " -> \"
+- Returns escaped string
+
+### build_batch_commands(remote_dir: str, local_dir: str, files: list[str]) -> str
+- Starts with cd "escaped_remote_dir"
+- For each file: put -f "escaped_local_path"
+- Ends with bye
+- Returns complete batch command string
+
+## QA Verification
+
+### sftp_escape tests
+```
+'file with spaces.txt'
+'file\\\\backslash.txt'
+'file\\"quote.txt'
+```
+
+### build_batch_commands test
+```
+cd "/remote"
+put -f "/local/file1.txt"
+put -f "/local/file2.txt"
+bye
+```
+
+## Tests
+All 9 tests pass:
+- test_normal_filename
+- test_backslash_in_filename
+- test_quote_in_filename
+- test_space_in_filename
+- test_multiple_special_chars
+- test_single_file
+- test_multiple_files
+- test_empty_file_list
+- test_escapes_special_chars_in_paths
