@@ -8,7 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sftp_parallel.cli import _handle_upload, list_local_files, main, parse_destination
+from sftp_parallel.cli import (
+    _handle_upload,
+    list_local_files,
+    main,
+    parse_destination,
+)
 
 
 class TestParseDestination:
@@ -293,3 +298,84 @@ class TestMainEmptyDir:
             main(["upload", str(tmp), "user@host:/remote"])
 
         assert exc_info.value.code == 0
+
+
+class TestSkipExisting:
+    @patch("sftp_parallel.cli.run_sftp")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    def test_skip_existing_filters_files(
+        self, mock_remote_sizes: MagicMock, mock_run_sftp: MagicMock, tmp_path: object
+    ) -> None:
+        tmp = tmp_path  # type: ignore[attr-defined]
+        (tmp / "a.txt").write_text("hello")
+        (tmp / "b.txt").write_text("world")
+
+        a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
+        mock_remote_sizes.return_value = {"a.txt": a_size}
+        mock_run_sftp.return_value = (True, "")
+
+        with patch("sftp_parallel.cli.console") as mock_console:
+            with pytest.raises(SystemExit) as exc_info:
+                main(["upload", "--skip-existing", str(tmp), "user@host:/remote"])
+
+        assert exc_info.value.code == 0
+        mock_remote_sizes.assert_called_once_with("user@host", "/remote")
+        batch_commands = mock_run_sftp.call_args[0][1]
+        assert "b.txt" in batch_commands
+        assert "a.txt" not in batch_commands
+
+    @patch("sftp_parallel.cli.run_sftp")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    def test_skip_existing_prints_skip_message(
+        self, mock_remote_sizes: MagicMock, mock_run_sftp: MagicMock, tmp_path: object
+    ) -> None:
+        tmp = tmp_path  # type: ignore[attr-defined]
+        (tmp / "a.txt").write_text("hello")
+        (tmp / "b.txt").write_text("world")
+
+        a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
+        mock_remote_sizes.return_value = {"a.txt": a_size}
+        mock_run_sftp.return_value = (True, "")
+
+        with patch("sftp_parallel.cli.console") as mock_console:
+            with pytest.raises(SystemExit):
+                main(["upload", "--skip-existing", str(tmp), "user@host:/remote"])
+
+            skip_calls = [
+                c for c in mock_console.print.call_args_list if "Skipping" in str(c)
+            ]
+            assert len(skip_calls) > 0
+
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    def test_all_files_exist_on_remote(
+        self, mock_remote_sizes: MagicMock, tmp_path: object
+    ) -> None:
+        tmp = tmp_path  # type: ignore[attr-defined]
+        (tmp / "a.txt").write_text("hello")
+
+        a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
+        mock_remote_sizes.return_value = {"a.txt": a_size}
+
+        with patch("sftp_parallel.cli.console") as mock_console:
+            with pytest.raises(SystemExit) as exc_info:
+                main(["upload", "--skip-existing", str(tmp), "user@host:/remote"])
+
+        assert exc_info.value.code == 0
+        all_exist_calls = [
+            c for c in mock_console.print.call_args_list if "already exist" in str(c)
+        ]
+        assert len(all_exist_calls) > 0
+
+    @patch("sftp_parallel.cli.run_sftp")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    def test_skip_existing_not_called_without_flag(
+        self, mock_remote_sizes: MagicMock, mock_run_sftp: MagicMock, tmp_path: object
+    ) -> None:
+        tmp = tmp_path  # type: ignore[attr-defined]
+        (tmp / "a.txt").write_text("hello")
+        mock_run_sftp.return_value = (True, "")
+
+        with pytest.raises(SystemExit):
+            main(["upload", str(tmp), "user@host:/remote"])
+
+        mock_remote_sizes.assert_not_called()

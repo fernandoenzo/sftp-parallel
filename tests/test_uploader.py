@@ -1,12 +1,17 @@
 """Tests for the uploader module."""
 
+import os
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
 from sftp_parallel.uploader import (
     build_batch_commands,
     distribute_files,
+    filter_existing_files,
+    get_remote_file_sizes,
+    parse_ls_output,
     run_parallel_uploads,
     run_sftp,
 )
@@ -219,3 +224,112 @@ class TestRunParallelUploadsEmptyBuckets(unittest.TestCase):
         assert success is True
         assert failed == 0
         mock_popen.assert_not_called()
+
+
+class TestParseLsOutput(unittest.TestCase):
+    def test_single_file(self) -> None:
+        result = parse_ls_output("-rw-r--r-- 1 user group 1234 Jan  1 12:00 file.txt\n")
+        assert result == {"file.txt": 1234}
+
+    def test_multiple_files(self) -> None:
+        output = (
+            "-rw-r--r-- 1 user group 1234 Jan  1 12:00 a.txt\n"
+            "-rw-r--r-- 1 user group 5678 Jan  2 13:00 b.txt\n"
+        )
+        result = parse_ls_output(output)
+        assert result == {"a.txt": 1234, "b.txt": 5678}
+
+    def test_empty_output(self) -> None:
+        result = parse_ls_output("")
+        assert result == {}
+
+    def test_whitespace_only(self) -> None:
+        result = parse_ls_output("   \n  \n")
+        assert result == {}
+
+    def test_filename_with_spaces(self) -> None:
+        result = parse_ls_output(
+            "-rw-r--r-- 1 user group 100 Jan  1 12:00 my file.txt\n"
+        )
+        assert result == {"my file.txt": 100}
+
+    def test_ignores_non_matching_lines(self) -> None:
+        result = parse_ls_output(
+            "some random text\n-rw-r--r-- 1 u g 50 Jan 1 00:00 ok.txt\n"
+        )
+        assert result == {"ok.txt": 50}
+
+    def test_zero_size_file(self) -> None:
+        result = parse_ls_output("-rw-r--r-- 1 user group 0 Jan  1 12:00 empty.dat\n")
+        assert result == {"empty.dat": 0}
+
+
+class TestGetRemoteFileSizes(unittest.TestCase):
+    @patch("sftp_parallel.uploader.run_sftp")
+    def test_returns_parsed_sizes(self, mock_run_sftp: MagicMock) -> None:
+        mock_run_sftp.return_value = (
+            True,
+            "-rw-r--r-- 1 user group 100 Jan  1 12:00 a.txt\n"
+            "-rw-r--r-- 1 user group 200 Jan  2 13:00 b.txt\n",
+        )
+        result = get_remote_file_sizes("user@host", "/remote/dir")
+        assert result == {"a.txt": 100, "b.txt": 200}
+        mock_run_sftp.assert_called_once_with(
+            "user@host", 'cd "/remote/dir"\nls -l\nbye', timeout=10
+        )
+
+    @patch("sftp_parallel.uploader.run_sftp")
+    def test_custom_timeout(self, mock_run_sftp: MagicMock) -> None:
+        mock_run_sftp.return_value = (True, "")
+        get_remote_file_sizes("user@host", "/dir", timeout=30)
+        mock_run_sftp.assert_called_once_with(
+            "user@host", 'cd "/dir"\nls -l\nbye', timeout=30
+        )
+
+    @patch("sftp_parallel.uploader.run_sftp")
+    def test_returns_empty_on_failure(self, mock_run_sftp: MagicMock) -> None:
+        mock_run_sftp.return_value = (False, "Connection refused")
+        result = get_remote_file_sizes("user@host", "/dir")
+        assert result == {}
+
+
+class TestFilterExistingFiles(unittest.TestCase):
+    def test_skips_matching_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "a.txt")
+            with open(path, "wb") as f:
+                f.write(b"x" * 100)
+            result = filter_existing_files(tmpdir, ["a.txt"], {"a.txt": 100})
+            assert result == []
+
+    def test_includes_when_remote_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "a.txt")
+            with open(path, "wb") as f:
+                f.write(b"x" * 100)
+            result = filter_existing_files(tmpdir, ["a.txt"], {})
+            assert result == ["a.txt"]
+
+    def test_includes_when_size_differs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "a.txt")
+            with open(path, "wb") as f:
+                f.write(b"x" * 100)
+            result = filter_existing_files(tmpdir, ["a.txt"], {"a.txt": 999})
+            assert result == ["a.txt"]
+
+    def test_mixed_scenario(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name, size in [("a.txt", 100), ("b.txt", 200), ("c.txt", 300)]:
+                with open(os.path.join(tmpdir, name), "wb") as f:
+                    f.write(b"x" * size)
+            remote = {"a.txt": 100, "b.txt": 999}
+            result = filter_existing_files(tmpdir, ["a.txt", "b.txt", "c.txt"], remote)
+            assert result == ["b.txt", "c.txt"]
+
+    def test_skips_oserror_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = filter_existing_files(
+                tmpdir, ["nonexistent.txt"], {"nonexistent.txt": 10}
+            )
+            assert result == []

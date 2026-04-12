@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -163,3 +165,115 @@ def run_parallel_uploads(
 
     all_success: bool = failed_count == 0
     return all_success, failed_count
+
+
+def parse_ls_output(ls_output: str) -> dict[str, int]:
+    """Parse ``ls -l`` output from SFTP into a filename → size mapping.
+
+    Parameters
+    ----------
+    ls_output:
+        Raw output from ``ls -l`` run inside an SFTP session.  Each line
+        has the standard format::
+
+            -rw-r--r--   1 user     group        1234 Jan  1 12:00 file.txt
+
+    Returns
+    -------
+    dict[str, int]
+        Mapping of filename to file size in bytes.
+
+    Examples
+    --------
+    >>> parse_ls_output("-rw-r--r-- 1 user group 1234 Jan  1 12:00 file.txt\\n")
+    {'file.txt': 1234}
+    """
+    result: dict[str, int] = {}
+    for line in ls_output.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # ls -l format: permissions links owner group size month day time/year name
+        match = re.match(
+            r"^([\-ldrwx]{10})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+(.+)$",
+            line,
+        )
+        if match:
+            size = int(match.group(2))
+            name = match.group(3).strip()
+            result[name] = size
+    return result
+
+
+def get_remote_file_sizes(
+    host: str,
+    remote_dir: str,
+    timeout: int = 10,
+) -> dict[str, int]:
+    """Retrieve filename → size mapping from a remote directory via SFTP.
+
+    Connects to *host* and runs ``ls -l`` in *remote_dir* to enumerate
+    remote files and their sizes.
+
+    Parameters
+    ----------
+    host:
+        Remote host specification (e.g. ``user@host``).
+    remote_dir:
+        Path to the remote directory to list.
+    timeout:
+        Connection timeout in seconds.
+
+    Returns
+    -------
+    dict[str, int]
+        Mapping of filename to file size in bytes.  Empty dict on failure.
+    """
+    batch_commands: str = f'cd "{remote_dir}"\nls -l\nbye'
+    success, output = run_sftp(host, batch_commands, timeout=timeout)
+    if not success:
+        return {}
+    return parse_ls_output(output)
+
+
+def filter_existing_files(
+    local_dir: str,
+    local_files: list[str],
+    remote_sizes: dict[str, int],
+) -> list[str]:
+    """Return files from *local_files* that need uploading.
+
+    A file **needs** uploading when it either does not exist on the remote,
+    or when its local size differs from the remote size.
+
+    Parameters
+    ----------
+    local_dir:
+        Local directory containing the files.
+    local_files:
+        List of filenames (not full paths) to check.
+    remote_sizes:
+        Mapping of remote filename → size in bytes (as returned by
+        :func:`get_remote_file_sizes`).
+
+    Returns
+    -------
+    list[str]
+        Subset of *local_files* that must be uploaded.
+
+    Examples
+    --------
+    >>> filter_existing_files("/tmp", ["a.txt", "b.txt"], {"a.txt": 100})
+    ['b.txt']
+    """
+    need_upload: list[str] = []
+    for filename in local_files:
+        local_path = os.path.join(local_dir, filename)
+        try:
+            local_size = os.path.getsize(local_path)
+        except OSError:
+            continue
+        remote_size = remote_sizes.get(filename)
+        if remote_size is None or remote_size != local_size:
+            need_upload.append(filename)
+    return need_upload

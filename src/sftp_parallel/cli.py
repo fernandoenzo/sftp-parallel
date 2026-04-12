@@ -11,7 +11,11 @@ from rich.console import Console
 
 from sftp_parallel import __version__
 from sftp_parallel.batch import build_batch_commands
-from sftp_parallel.uploader import run_sftp
+from sftp_parallel.uploader import (
+    filter_existing_files,
+    get_remote_file_sizes,
+    run_sftp,
+)
 
 console = Console()
 
@@ -152,6 +156,25 @@ def _handle_upload(args: argparse.Namespace) -> None:
     if not files:
         console.print("[yellow]No files found in local directory.[/yellow]")
         sys.exit(0)
+
+    if args.skip_existing:
+        remote_sizes: dict[str, int] = get_remote_file_sizes(host, remote_dir)
+        skip_count = len(files) - len(
+            [
+                f
+                for f in files
+                if f in remote_sizes
+                and remote_sizes[f] == os.path.getsize(os.path.join(local_dir, f))
+            ]
+        )
+        files = filter_existing_files(local_dir, files, remote_sizes)
+        if skip_count > 0:
+            console.print(
+                f"Skipping {skip_count} existing file{'s' if skip_count != 1 else ''}"
+            )
+        if not files:
+            console.print("[bold green]All files already exist on remote.[/bold green]")
+            sys.exit(0)
 
     console.print(
         f"Uploading {len(files)} file{'s' if len(files) != 1 else ''} "
