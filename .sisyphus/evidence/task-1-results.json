@@ -1,0 +1,57 @@
+{
+  "timestamp": "2026-04-11T17:44:59.606Z",
+  "results": {
+    "connectivity": {
+      "pass": true,
+      "sessionCount": 41
+    },
+    "create_child": {
+      "pass": true,
+      "parentId": "ses_2825a6020ffeorn1f7Zh04dFKo",
+      "childId": "ses_2825a6013ffeQk8DZcqcr8tqUJ",
+      "returnedParentID": "ses_2825a6020ffeorn1f7Zh04dFKo"
+    },
+    "child_prompt": {
+      "pass": true,
+      "role": "assistant",
+      "finish": "stop",
+      "hasParts": true
+    },
+    "idle_propagation": {
+      "pass": true,
+      "typeAnalysis": "EventSessionIdle carries only sessionID, no parentID. Child idle events propagate to plugin handlers. The continuation plugin's existing parentID filter (line 104) correctly excludes them from continuation logic.",
+      "childSessionCount": 39,
+      "sampleChildID": "ses_2825a6013ffeQk8DZcqcr8tqUJ",
+      "sampleParentID": "ses_2825a6020ffeorn1f7Zh04dFKo"
+    },
+    "session_status": {
+      "pass": true,
+      "statusCount": 0,
+      "childInStatus": false,
+      "sampleTypes": []
+    },
+    "parent_id_field": {
+      "pass": true,
+      "id": "ses_2825a6013ffeQk8DZcqcr8tqUJ",
+      "parentID": "ses_2825a6020ffeorn1f7Zh04dFKo",
+      "title": "SDK Validation Child",
+      "correctParentID": true
+    },
+    "child_messages": {
+      "pass": true,
+      "messageCount": 2,
+      "roles": [
+        "user",
+        "assistant"
+      ],
+      "firstRole": "user",
+      "lastRole": "assistant"
+    },
+    "session_children": {
+      "pass": true,
+      "childrenCount": 1,
+      "ourChildPresent": true,
+      "childParentIDMatch": true
+    }
+  }
+}

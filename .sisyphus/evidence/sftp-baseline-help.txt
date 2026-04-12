@@ -1,0 +1,20 @@
+───────────────────────────────────────────────────────────
+sftp-parallel-upload.sh
+Uploads all files from a local folder to a remote SFTP server
+using `put -f` (fsync) with configurable parallelism.
+
+Each parallel slot runs its own sftp session with a batchfile
+of `put -f` commands, so every file is fsynced on the server.
+
+Usage:
+  sftp-parallel-upload.sh [-j N] [-r remote_dir] user@host local_dir
+
+  -j N          Parallel sftp sessions (default: 2)
+  -r remote_dir Remote directory (default: .)
+  -h            Show this help
+
+Examples:
+  sftp-parallel-upload.sh -j 3 -r /data/incoming deploy@myserver /tmp/uploads
+  sftp-parallel-upload.sh user@host ./files_to_send
+───────────────────────────────────────────────────────────
+Exit code: 0

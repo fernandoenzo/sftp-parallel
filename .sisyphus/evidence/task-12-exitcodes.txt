@@ -1,0 +1,15 @@
+=== Task 12: Exit Code Differentiation - Evidence ===
+
+QA Test Results:
+  Test 1: Help (-h)           → Exit 0  (expected: 0)  ✓
+  Test 2: No args             → Exit 2  (expected: 2)  ✓
+  Test 3: Bad -j (0)          → Exit 2  (expected: 2)  ✓
+  Test 4: Bad host            → Exit 66 (expected: 66) ✓
+
+Exit Code Mapping (per script documentation):
+  EX_OK=0       Success
+  EX_USAGE=2    Usage error (invalid arguments, missing args, bad -j)
+  EX_NOINPUT=66 Connection/input error (directory not found, sftp not found, connection failed)
+  EX_JOBFAIL=74 Upload job failure (sftp session failures)
+
+File: /tmp/sftp-parallel-upload-v7.sh

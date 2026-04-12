@@ -1,0 +1,27 @@
+{
+  "active_plan": "/home/fernando/Proyectos JetBrains/PycharmProjects/sftp-parallel/.sisyphus/plans/sftp-python-port.md",
+  "started_at": "2026-04-12T10:41:11.149Z",
+  "session_ids": [
+    "ses_2848573e1ffel8fwrh2I66mMRx",
+    "ses_27eb6d615ffeWbDM2FxBhn8xrn",
+    "ses_27eb6c566ffe1S8hQ83vy1K6X3"
+  ],
+  "plan_name": "sftp-python-port",
+  "session_origins": {
+    "ses_2848573e1ffel8fwrh2I66mMRx": "direct",
+    "ses_27eb6d615ffeWbDM2FxBhn8xrn": "appended",
+    "ses_27eb6c566ffe1S8hQ83vy1K6X3": "appended"
+  },
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Create pyproject.toml + package structure",
+      "session_id": "ses_27eb6c566ffe1S8hQ83vy1K6X3",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-12T10:44:36.573Z"
+    }
+  },
+  "agent": "Sisyphus"
+}

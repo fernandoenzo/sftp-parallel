@@ -1,0 +1,18 @@
+## Task 4 QA - Rate Limit Logging
+
+### Verification 1: Rate Limit Hits Logged
+Rate limit log calls found: 3
+- Line 224: `Rate limit hit (watcher)` - checkStuckChildSessions
+- Line 282: `Rate limit hit (parent)` - handleParentSession
+- Line 379: `Rate limit hit (child)` - handleChildSession
+
+All 3 locations now log before returning: PASS
+
+### Verification 2: Nudge In Progress Logging
+Found 2 instances of `Nudge in progress (skipping)`:
+- Line 245: watcher concurrency check
+- Line 359: handleChildSession concurrency check
+
+Both locations now log before returning: PASS
+
+### Result: PASS

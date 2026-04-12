@@ -1,0 +1,2 @@
+/tmp/sftp-parallel-upload-v6.sh: línea 67: 1: Error: specify user@host as first positional argument
+Exit code: 0

@@ -1,0 +1,87 @@
+# Task 0.2: sftp batch mode output capture verification
+
+## Test Setup
+- Created test files in /tmp/sftp_batch_test/
+- file1.txt and file2.txt containing simple text
+
+## Test 1: Standard batch mode (sftp -b -)
+Command:
+```
+sftp -b - fernando@beelink <<EOF
+cd /tmp
+put /tmp/sftp_batch_test/file1.txt
+put /tmp/sftp_batch_test/file2.txt
+bye
+EOF
+```
+
+Output captured:
+```
+sftp> cd /tmp
+sftp> put /tmp/sftp_batch_test/file1.txt
+sftp> put /tmp/sftp_batch_test/file2.txt
+sftp> bye
+```
+
+Observations:
+- NO upload progress information shown
+- Only command prompts returned
+- Minimal output - likely quiet mode enabled by default
+
+## Test 2: Batch mode with -N flag (sftp -N -b -)
+Command:
+```
+sftp -N -b - fernando@beelink <<EOF
+cd /tmp
+put /tmp/sftp_batch_test/file1.txt
+put /tmp/sftp_batch_test/file2.txt
+bye
+EOF
+```
+
+Output captured:
+```
+Connected to beelink.
+sftp> cd /tmp
+sftp> put /tmp/sftp_batch_test/file1.txt
+Uploading /tmp/sftp_batch_test/file1.txt to /tmp/file1.txt
+sftp> put /tmp/sftp_batch_test/file2.txt
+Uploading /tmp/sftp_batch_test/file2.txt to /tmp/file2.txt
+sftp> bye
+```
+
+Observations:
+- Shows "Connected to beelink." header
+- Shows "Uploading X to Y" progress lines
+- These lines appear BEFORE the sftp> prompt for that command
+- Progress info goes to stdout (capturable)
+
+## Conclusion
+
+| Aspect | Result |
+|--------|--------|
+| sftp batch output capturable via stdout/stderr | YES |
+| -N flag provides more verbose output | YES |
+| Progress info available (e.g., bytes, percentage) | NO - only filenames |
+| Output format parseable | YES - "Uploading SOURCE to DEST" pattern |
+
+## Parsing Strategy for Progress Tracking
+
+The -N flag enables "upload" messages that follow this pattern:
+```
+Uploading /path/to/source to /path/to/dest
+```
+
+This can be used to:
+1. Detect that a transfer has started
+2. Identify source and destination paths
+3. Correlate with actual file sizes for percentage calculation
+
+However, sftp does NOT output real-time progress (bytes transferred, percentage, speed).
+Only the "Uploading" start message and "sftp>" command prompt after completion.
+
+## Recommendation
+- Use `-N` flag to get upload notifications
+- Parse "Uploading SOURCE to DEST" lines to track transfer initiation
+- Cannot get real-time progress without parsing sftp debug output
+- May need alternative approach: parse sftp's interactive progress or use lftp instead

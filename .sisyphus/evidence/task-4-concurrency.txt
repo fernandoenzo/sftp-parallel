@@ -1,0 +1,13 @@
+Task 4 QA - Concurrency Prevention Verification
+===================================================
+
+Checks nudgeInProgress.has(sessionID): TRUE (line 174)
+Adds nudgeInProgress.add(sessionID): TRUE (line 177)
+Deletes nudgeInProgress.delete(sessionID): TRUE (line 195, in finally block)
+
+The try-catch-finally pattern ensures nudgeInProgress is always cleaned up:
+- line 178: try { ... }
+- line 190: catch (err) { ... }
+- line 194: finally { nudgeInProgress.delete(sessionID) }
+
+RESULT: PASS

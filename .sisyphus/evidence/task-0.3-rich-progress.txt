@@ -1,0 +1,30 @@
+Testing Rich progress bar with subprocess.Popen
+
+============================================================
+=== Test 1: ThreadPoolExecutor with Rich Progress ===
+  Completed: 1/5
+  Completed: 2/5
+  Completed: 3/5
+  Completed: 4/5
+  Completed: 5/5
+Uploading...   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
+Test 1 PASSED: ThreadPool progress bar worked
+
+=== Test 2: subprocess.Popen with Rich Progress ===
+  Subprocess 1/3 completed
+  Subprocess 2/3 completed
+  Subprocess 3/3 completed
+Running subprocesses...   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
+Test 2 PASSED: subprocess.Popen worked with Rich
+
+=== Test 3: Concurrent subprocesses with Rich Progress ===
+  Concurrent subprocess 1/4 done
+  Concurrent subprocess 2/4 done
+  Concurrent subprocess 3/4 done
+  Concurrent subprocess 4/4 done
+Concurrent uploads...   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100%
+Test 3 PASSED: Concurrent subprocesses worked with Rich
+
+============================================================
+ALL TESTS PASSED!
+Rich progress bars work correctly with subprocess.Popen

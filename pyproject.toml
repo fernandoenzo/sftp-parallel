@@ -1,0 +1,22 @@
+[project]
+name = "sftp-parallel"
+version = "0.1.0"
+description = "Parallel SFTP uploader with verification"
+requires-python = ">=3.13"
+license = "GPL-3.0"
+dependencies = [
+    "rich",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-mock",
+]
+
+[project.scripts]
+sftp-parallel = "sftp_parallel.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

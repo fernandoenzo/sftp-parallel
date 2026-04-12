@@ -1,0 +1,29 @@
+=== Task 5: Extract validate_inputs() Function ===
+
+1. Function definition exists at lines 97-140:
+   - validate_inputs(host, local_dir, jobs) signature
+   - HOST/LOCAL_DIR/JOBS passed as positional arguments
+   - Uses log_error() for all error messages
+   - Returns 1 on any validation failure
+   - Sets global FILES array and TOTAL variable
+
+2. Call site at line 145:
+   validate_inputs "$HOST" "$LOCAL_DIR" "$JOBS" || exit $?
+
+3. Validation checks in validate_inputs():
+   - LOCAL_DIR directory existence check
+   - JOBS positive integer regex check
+   - JOBS max value check vs MAX_JOBS
+   - sftp command availability check
+   - File discovery via find/mapfile (sets FILES global)
+   - Empty directory check (TOTAL == 0)
+   - File readability check
+   - Control character check in filenames
+
+4. QA Verification:
+   - grep -c 'validate_inputs()' => 1  ✓
+   - Missing host arg error: "Error: specify user@host as first positional argument" ✓
+   - Invalid -j 0 error: "✗ Error: -j must be a positive integer, got '0'" ✓
+   - Help output diff: identical ✓
+
+5. No changes to: validation logic, error messages, or exit codes

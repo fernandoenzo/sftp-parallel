@@ -1,0 +1,22 @@
+QA Results for task-2-parallel-fetch:
+
+1. Promise.all exists: PASS (added for parallel session fetching)
+2. Busy filter exists: PASS (filter for status.type === "busy")
+3. Sequential nudge sending preserved: PASS (for loop with await client.session.prompt)
+4. No sequential await in for loop: PASS (session.get moved outside for loop)
+
+Verification via grep:
+199:    const sessionDetails = await Promise.all(
+400:        const [sessionResult, messagesResult] = await Promise.all([
+
+Busy filter verification:
+
+Sequential nudge pattern (for loop + client.session.prompt):
+250:        await client.session.prompt({
+378:      await client.session.prompt({
+
+Lines 188-191 showing busy filter:
+    const busySessionEntries = Object.entries(statusResult.data).filter(
+      ([sessionID, status]) => {
+        if (status.type !== "busy") {
+          busyStartTimes.delete(sessionID)

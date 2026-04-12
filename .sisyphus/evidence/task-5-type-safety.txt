@@ -1,0 +1,30 @@
+## Task 5 QA Evidence — Type Safety
+
+### 1. No `any` types in handler signatures
+any types in signatures: 0
+No any types: true — PASS
+
+### 2. Types imported from SDK
+Has Message import: true — PASS
+Has Part import: true — PASS
+Has MessageItem type: true — PASS
+
+### 3. No underscore prefix on messages
+Underscore messages: 0
+No underscore prefix: true — PASS
+
+### 4. TypeScript compilation
+bun build --no-bundle: SUCCESS — PASS
+
+### Changes Summary
+- Added import: `import type { Message, Part } from "@opencode-ai/sdk"`
+- Added local type: `type MessageItem = { info: Message; parts: Array<Part> }`
+- Replaced `last: any` → `last: MessageItem` in both handlers
+- Replaced `_messages: Array<any>` → `messages: MessageItem[]` in both handlers
+- Removed underscore prefix from `_messages` → `messages`
+
+Note: Used `MessageItem` (local type alias for `{ info: Message; parts: Array<Part> }`)
+instead of `AssistantMessage` because the SDK's `AssistantMessage` type represents
+only the `info` portion of a message, not the full `{ info, parts }` structure
+that `client.session.messages()` returns. This provides accurate type safety
+while matching the actual data shape.

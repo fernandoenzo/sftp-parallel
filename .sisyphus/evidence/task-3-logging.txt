@@ -1,0 +1,30 @@
+=== TASK 3: Logging Functions Evidence ===
+Date: sáb 11 abr 2026 22:00:55 CEST
+
+=== QA 1: Verify logging functions used ===
+Count of log_info|log_error|log_debug (expect 8+):
+15
+
+=== QA 2: Verify help output identical ===
+PASS: Help output is identical
+
+=== QA 3: Verify log function definitions ===
+log_info()  { printf '→ %s\n' "$*"; }
+log_error() { printf '✗ %s\n' "$*" >&2; }
+log_debug() { [[ "${DEBUG:-0}" == "1" ]] && printf '[DEBUG] %s\n' "$*" >&2 || true; }
+
+
+=== QA 4: All error messages converted to log_error ===
+Remaining echo with Error prefix (should be 0):
+0
+0
+
+=== QA 5: Remaining echo calls (debug/session info only) ===
+105:    echo "No files found in '$LOCAL_DIR'" >&2
+160:    echo "  [session $((BUCKET_NUM + 1))] files: $(echo "$BUCKET_CONTENTS" | tr '\n' ' ')"
+
+=== Summary ===
+Logging functions extracted: log_info, log_error, log_debug
+Total function usages: 15
+Error messages converted: 8
+Remaining bare echo: 2 (no files found, session files list - not error/info level)

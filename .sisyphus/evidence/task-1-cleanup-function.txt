@@ -1,0 +1,13 @@
+QA: cleanupStaleEntries function exists
+=== grep result ===
+/home/fernando/.config/opencode/plugins/continuation.ts
+  139: async function cleanupStaleEntries(): Promise<void> {
+
+JSDoc present at lines 134-138:
+  /**
+   * Periodic cleanup: removes stale entries from Maps/Sets for sessions
+   * that no longer exist or have completed.
+   * Called every N watcher ticks to prevent unbounded memory growth.
+   */
+
+RESULT: PASS

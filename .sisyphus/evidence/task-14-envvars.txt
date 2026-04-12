@@ -1,0 +1,37 @@
+TASK 14: Environment Variable Configuration
+============================================
+
+FILE: /tmp/sftp-parallel-upload-v7.sh
+
+CHANGES MADE:
+-------------
+
+1. Line 225: JOBS now respects SFTP_JOBS env var
+   Before: local JOBS="${DEFAULT_JOBS}"
+   After:  local JOBS="${SFTP_JOBS:-${DEFAULT_JOBS}}"
+
+2. Line 183: run_uploads sftp command uses SFTP_CONNECT_TIMEOUT
+   Before: sftp -o ConnectTimeout=${CONNECT_TIMEOUT}
+   After:  sftp -o ConnectTimeout=${SFTP_CONNECT_TIMEOUT:-${CONNECT_TIMEOUT}}
+
+3. Line 248: Connection test sftp command uses SFTP_CONNECT_TIMEOUT
+   Before: sftp -o ConnectTimeout=${CONNECT_TIMEOUT}
+   After:  sftp -o ConnectTimeout=${SFTP_CONNECT_TIMEOUT:-${CONNECT_TIMEOUT}}
+
+VERIFICATION:
+-------------
+Syntax check: PASSED
+  $ bash -n /tmp/sftp-parallel-upload-v7.sh && echo "Syntax OK"
+  Syntax OK
+
+Help output: PASSED
+  $ /tmp/sftp-parallel-upload-v7.sh -h
+  Shows usage correctly
+
+CODE PRECEDENCE (CLI > env var > default):
+------------------------------------------
+1. JOBS defaults to ${SFTP_JOBS:-${DEFAULT_JOBS}} (env var OR default)
+2. getopts directly sets JOBS="$OPTARG" which overrides the default
+3. CONNECT_TIMEOUT is readonly constant, sftp commands use 
+   ${SFTP_CONNECT_TIMEOUT:-${CONNECT_TIMEOUT}} (env var OR constant)
+

@@ -1,0 +1,43 @@
+=== Task 10 QA Evidence ===
+
+### 1. Syntax check ###
+PASS: Syntax OK
+
+### 2. --help test ###
+───────────────────────────────────────────────────────────
+sftp-parallel-upload.sh
+Uploads all files from a local folder to a remote SFTP server
+using `put -f` (fsync) with configurable parallelism.
+
+Each parallel slot runs its own sftp session with a batchfile
+of `put -f` commands, so every file is fsynced on the server.
+
+Usage:
+  sftp-parallel-upload.sh [-j N] [-r remote_dir] user@host local_dir
+  sftp-parallel-upload.sh [--jobs=N] [--remote-dir=remote_dir] user@host local_dir
+
+  -j N, --jobs=N       Parallel sftp sessions (default: 2)
+  -r remote_dir, --remote-dir=remote_dir  Remote directory (default: .)
+  -h, --help           Show this help
+
+### 3. Long options test (--jobs=4 --remote-dir=/tmp) ###
+→ Uploading 7 file(s) to fernando@beelink:/tmp with 4 parallel session(s)
+/tmp/sftp-parallel-upload-v7.sh: línea 91: FILE: variable sin asignar
+  [session 1] files: file with spaces.txt file3.txt  
+/tmp/sftp-parallel-upload-v7.sh: línea 91: FILE: variable sin asignar
+  [session 2] files: file$special.txt file4.txt  
+
+### 4. Short options test (-j 2 -r /tmp) ###
+→ Uploading 7 file(s) to fernando@beelink:/tmp with 2 parallel session(s)
+/tmp/sftp-parallel-upload-v7.sh: línea 91: FILE: variable sin asignar
+  [session 1] files: file with spaces.txt file1.txt file3.txt file5.txt  
+/tmp/sftp-parallel-upload-v7.sh: línea 91: FILE: variable sin asignar
+  [session 2] files: file$special.txt file2.txt file4.txt  
+
+### 5. Help shows long options ###
+  sftp-parallel-upload.sh [--jobs=N] [--remote-dir=remote_dir] user@host local_dir
+  -j N, --jobs=N       Parallel sftp sessions (default: 2)
+  -r remote_dir, --remote-dir=remote_dir  Remote directory (default: .)
+  -h, --help           Show this help
+
+=== Evidence complete ===

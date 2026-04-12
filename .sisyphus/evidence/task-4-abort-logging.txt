@@ -1,0 +1,16 @@
+## Task 4 QA - Abort Logging
+
+### Verification 1: Abort Errors Logged
+Abort calls found: 2 (lines 231, 345)
+Logged catch handlers: 2 (both use `.catch(async (err) => { ... })`)
+All aborts have logged error handlers: PASS
+
+### Verification 2: Silent Catches Remaining
+Only 1 silent catch remains at line 94 - this is the intentional `.catch(() => {})` on the log function itself (not abort-related)
+No silent catches on abort: PASS
+
+### Changes Made
+- Line 231-234: watcher abort now logs on failure
+- Line 345-348: handleChildSession abort now logs on failure
+
+### Result: PASS
