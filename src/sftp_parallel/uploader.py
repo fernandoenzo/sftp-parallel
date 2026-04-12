@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import subprocess
-from typing import Tuple
 
 
 def run_sftp(
     host: str,
     batch_commands: str,
     timeout: int = 10,
-) -> Tuple[bool, str]:
+) -> tuple[bool, str]:
     """Invoke ``sftp -N -b -`` with *batch_commands* piped via stdin.
 
     Parameters

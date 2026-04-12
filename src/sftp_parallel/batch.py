@@ -1,4 +1,4 @@
-from typing import List
+from __future__ import annotations
 
 
 def sftp_escape(path: str) -> str:
@@ -6,8 +6,8 @@ def sftp_escape(path: str) -> str:
     return escaped.replace('"', '\\"')
 
 
-def build_batch_commands(remote_dir: str, local_dir: str, files: List[str]) -> str:
-    commands: List[str] = []
+def build_batch_commands(remote_dir: str, local_dir: str, files: list[str]) -> str:
+    commands: list[str] = []
     commands.append(f'cd "{sftp_escape(remote_dir)}"')
 
     for file in files:
