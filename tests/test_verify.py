@@ -410,13 +410,13 @@ class TestComputeRemoteChecksumsTimeout:
 
 class TestVerifyIntegration:
     @patch("sftp_parallel.cli.verify_uploads")
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_verify_flag_triggers_verification(
-        self, mock_run_parallel: MagicMock, mock_verify: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
         mock_verify.return_value = (["test.txt"], [])
 
         with pytest.raises(SystemExit) as exc_info:
@@ -426,13 +426,13 @@ class TestVerifyIntegration:
         mock_verify.assert_called_once()
 
     @patch("sftp_parallel.cli.verify_uploads")
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_verify_mismatch_exits_one(
-        self, mock_run_parallel: MagicMock, mock_verify: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
         mock_verify.return_value = ([], ["test.txt"])
 
         with pytest.raises(SystemExit) as exc_info:
@@ -441,13 +441,13 @@ class TestVerifyIntegration:
         assert exc_info.value.code == 1
 
     @patch("sftp_parallel.cli.verify_uploads")
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_verify_not_called_without_flag(
-        self, mock_run_parallel: MagicMock, mock_verify: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with pytest.raises(SystemExit):
             main(["upload", str(tmp), "user@host:/remote"])
@@ -455,13 +455,13 @@ class TestVerifyIntegration:
         mock_verify.assert_not_called()
 
     @patch("sftp_parallel.cli.verify_uploads")
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_verify_all_matched_exits_zero(
-        self, mock_run_parallel: MagicMock, mock_verify: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
         mock_verify.return_value = (["test.txt"], [])
 
         with pytest.raises(SystemExit) as exc_info:
@@ -470,14 +470,14 @@ class TestVerifyIntegration:
         assert exc_info.value.code == 0
 
     @patch("sftp_parallel.cli.verify_uploads")
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_verify_mixed_results(
-        self, mock_run_parallel: MagicMock, mock_verify: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "a.txt").write_text("aaa")
         (tmp / "b.txt").write_text("bbb")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
         mock_verify.return_value = (["a.txt"], ["b.txt"])
 
         with pytest.raises(SystemExit) as exc_info:
@@ -486,13 +486,13 @@ class TestVerifyIntegration:
         assert exc_info.value.code == 1
 
     @patch("sftp_parallel.cli.verify_uploads")
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_verify_not_called_on_failed_upload(
-        self, mock_run_parallel: MagicMock, mock_verify: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (False, 1)
+        mock_upload_files.return_value = (False, 1)
 
         with pytest.raises(SystemExit):
             main(["upload", str(tmp), "user@host:/remote", "--verify"])

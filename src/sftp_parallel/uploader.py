@@ -109,6 +109,10 @@ def run_parallel_uploads(
 ) -> tuple[bool, int]:
     """Spawn parallel SFTP processes, one per bucket, and collect results.
 
+    .. deprecated::
+        Use :func:`upload_files` instead, which provides per-file progress
+        and true parallelism via a worker queue.
+
     Parameters
     ----------
     host:
@@ -184,6 +188,112 @@ def run_parallel_uploads(
         return all_success, failed_count
     finally:
         cleanup_signal_handlers()
+
+
+def upload_files(
+    host: str,
+    files: list[str],
+    remote_dir: str,
+    local_dir: str,
+    num_workers: int = 2,
+    timeout: int = 10,
+    progress_callback: Callable[[str], None] | None = None,
+) -> tuple[bool, int]:
+    """Upload files using *num_workers* parallel sftp sessions.
+
+    Each worker picks one file from a shared queue, opens an sftp
+    session, uploads that single file with ``put -f``, then picks the next.
+    Progress advances per-file, giving real-time visibility.
+
+    Parameters
+    ----------
+    host:
+        Remote host specification (e.g. ``user@host``).
+    files:
+        List of filenames (basenames only) to upload.
+    remote_dir:
+        Remote directory path to upload files to.
+    local_dir:
+        Local directory path containing the files to upload.
+    num_workers:
+        Number of parallel worker threads (default 2).
+    timeout:
+        Connection timeout in seconds (passed as ``ConnectTimeout``).
+    progress_callback:
+        Optional callback invoked per successfully uploaded file with
+        the filename.  Signature: ``callback(str) -> None``.
+
+    Returns
+    -------
+    tuple[bool, int]
+        ``(all_success, failed_count)`` where *all_success* is ``True``
+        when every file uploaded successfully.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    if not files:
+        return True, 0
+
+    file_queue = list(files)
+    failed_count = 0
+    lock = threading.Lock()
+    active_popens: list[subprocess.Popen[str]] = []
+    popen_lock = threading.Lock()
+
+    def upload_one(filename: str) -> bool:
+        batch_cmds = build_batch_commands(remote_dir, local_dir, [filename])
+        cmd: list[str] = [
+            "sftp",
+            "-N",
+            "-o",
+            f"ConnectTimeout={timeout}",
+            "-o",
+            "BatchMode=yes",
+            "-b",
+            "-",
+            host,
+        ]
+        proc: subprocess.Popen[str] = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        with popen_lock:
+            active_popens.append(proc)
+        try:
+            proc.communicate(input=batch_cmds, timeout=timeout * 3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return False
+        except Exception:  # noqa: BLE001
+            return False
+        finally:
+            with popen_lock:
+                if proc in active_popens:
+                    active_popens.remove(proc)
+        if proc.returncode != 0:
+            return False
+        if progress_callback is not None:
+            progress_callback(filename)
+        return True
+
+    setup_signal_handlers(active_popens)
+    try:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {executor.submit(upload_one, f): f for f in file_queue}
+            for future in as_completed(futures):
+                if not future.result():
+                    with lock:
+                        failed_count += 1
+    finally:
+        cleanup_signal_handlers()
+
+    return failed_count == 0, failed_count
 
 
 def parse_ls_output(ls_output: str) -> dict[str, int]:

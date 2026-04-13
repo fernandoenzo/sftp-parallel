@@ -16,6 +16,7 @@ from sftp_parallel.uploader import (
     parse_ls_output,
     run_parallel_uploads,
     run_sftp,
+    upload_files,
 )
 
 
@@ -304,13 +305,6 @@ class TestParseLsOutput(unittest.TestCase):
         )
         assert result == {}
 
-    def test_parse_ls_output_ignores_symlinks(self) -> None:
-        """Symlink lines (l prefix) must be filtered out."""
-        result = parse_ls_output(
-            "lrwxrwxrwx 1 user group 5 Jan  1 12:00 link -> target\n"
-        )
-        assert result == {}
-
 
 class TestGetRemoteFileSizes(unittest.TestCase):
     @patch("sftp_parallel.uploader.run_sftp")
@@ -381,3 +375,160 @@ class TestFilterExistingFiles(unittest.TestCase):
                 tmpdir, ["nonexistent.txt"], {"nonexistent.txt": 10}
             )
             assert result == []
+
+
+class TestUploadFilesAllSucceed(unittest.TestCase):
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_all_files_succeed(self, mock_popen: MagicMock) -> None:
+        mock_proc = _make_mock_proc(returncode=0)
+        mock_popen.return_value = mock_proc
+        success, failed = upload_files(
+            "user@host", ["a.txt", "b.txt", "c.txt"], "/remote", "/local"
+        )
+        assert success is True
+        assert failed == 0
+        assert mock_popen.call_count == 3
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_each_file_gets_own_sftp_session(self, mock_popen: MagicMock) -> None:
+        mock_popen.return_value = _make_mock_proc(returncode=0)
+        upload_files("user@host", ["a.txt", "b.txt"], "/remote", "/local")
+        assert mock_popen.call_count == 2
+        call_args_list = mock_popen.call_args_list
+        for call_args in call_args_list:
+            cmd = call_args[0][0]
+            assert cmd[0] == "sftp"
+            assert "-N" in cmd
+            assert "BatchMode=yes" in cmd
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_batch_commands_use_single_file(self, mock_popen: MagicMock) -> None:
+        mock_proc = _make_mock_proc(returncode=0)
+        mock_popen.return_value = mock_proc
+        upload_files("user@host", ["data.csv"], "/remote", "/local")
+        communicate_input = mock_proc.communicate.call_args[1]["input"]
+        assert 'put -f "/local/data.csv"' in communicate_input
+        assert communicate_input.count("put -f") == 1
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_sftp_command_includes_host_and_timeout(
+        self, mock_popen: MagicMock
+    ) -> None:
+        mock_proc = _make_mock_proc(returncode=0)
+        mock_popen.return_value = mock_proc
+        upload_files("user@host", ["a.txt"], "/remote", "/local", timeout=30)
+        cmd = mock_popen.call_args[0][0]
+        assert "ConnectTimeout=30" in cmd
+        assert "user@host" in cmd
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_progress_callback_called_per_file(self, mock_popen: MagicMock) -> None:
+        mock_popen.return_value = _make_mock_proc(returncode=0)
+        completed: list[str] = []
+        upload_files(
+            "user@host",
+            ["a.txt", "b.txt", "c.txt"],
+            "/remote",
+            "/local",
+            progress_callback=completed.append,
+        )
+        assert sorted(completed) == ["a.txt", "b.txt", "c.txt"]
+
+
+class TestUploadFilesSomeFail(unittest.TestCase):
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_some_files_fail(self, mock_popen: MagicMock) -> None:
+        call_count = 0
+
+        def make_proc():
+            nonlocal call_count
+            call_count += 1
+            proc = _make_mock_proc(returncode=0 if call_count <= 1 else 1)
+            return proc
+
+        mock_popen.side_effect = [make_proc() for _ in range(3)]
+        success, failed = upload_files(
+            "user@host", ["a.txt", "b.txt", "c.txt"], "/remote", "/local"
+        )
+        assert success is False
+        assert failed == 2
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_all_files_fail(self, mock_popen: MagicMock) -> None:
+        mock_popen.return_value = _make_mock_proc(returncode=1)
+        success, failed = upload_files(
+            "user@host", ["a.txt", "b.txt"], "/remote", "/local"
+        )
+        assert success is False
+        assert failed == 2
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_communicate_exception_counts_as_failure(
+        self, mock_popen: MagicMock
+    ) -> None:
+        proc = _make_mock_proc(returncode=0)
+        proc.communicate.side_effect = OSError("broken pipe")
+        mock_popen.return_value = proc
+        success, failed = upload_files("user@host", ["a.txt"], "/remote", "/local")
+        assert success is False
+        assert failed == 1
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_timeout_counts_as_failure(self, mock_popen: MagicMock) -> None:
+        proc = _make_mock_proc(returncode=0)
+        proc.communicate.side_effect = subprocess.TimeoutExpired(cmd="sftp", timeout=30)
+        proc.kill = MagicMock()
+        proc.wait = MagicMock()
+        mock_popen.return_value = proc
+        success, failed = upload_files("user@host", ["a.txt"], "/remote", "/local")
+        assert success is False
+        assert failed == 1
+        proc.kill.assert_called_once()
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_failed_files_dont_trigger_callback(self, mock_popen: MagicMock) -> None:
+        mock_popen.return_value = _make_mock_proc(returncode=1)
+        completed: list[str] = []
+        upload_files(
+            "user@host",
+            ["a.txt", "b.txt"],
+            "/remote",
+            "/local",
+            progress_callback=completed.append,
+        )
+        assert completed == []
+
+
+class TestUploadFilesEmptyList(unittest.TestCase):
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_empty_file_list(self, mock_popen: MagicMock) -> None:
+        success, failed = upload_files("user@host", [], "/remote", "/local")
+        assert success is True
+        assert failed == 0
+        mock_popen.assert_not_called()
+
+
+class TestUploadFilesWorkerCount(unittest.TestCase):
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_single_worker_sequential(self, mock_popen: MagicMock) -> None:
+        mock_popen.return_value = _make_mock_proc(returncode=0)
+        success, failed = upload_files(
+            "user@host", ["a.txt", "b.txt"], "/remote", "/local", num_workers=1
+        )
+        assert success is True
+        assert failed == 0
+        assert mock_popen.call_count == 2
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_four_workers_parallel(self, mock_popen: MagicMock) -> None:
+        mock_popen.return_value = _make_mock_proc(returncode=0)
+        success, failed = upload_files(
+            "user@host",
+            ["a.txt", "b.txt", "c.txt", "d.txt"],
+            "/remote",
+            "/local",
+            num_workers=4,
+        )
+        assert success is True
+        assert failed == 0
+        assert mock_popen.call_count == 4

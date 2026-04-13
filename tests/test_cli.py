@@ -78,27 +78,27 @@ class TestListLocalFiles:
 
 
 class TestMainUploadSuccess:
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_successful_upload_exits_zero(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with pytest.raises(SystemExit) as exc_info:
             main(["upload", str(tmp), "user@host:/remote"])
 
         assert exc_info.value.code == 0
-        mock_run_parallel.assert_called_once()
+        mock_upload_files.assert_called_once()
 
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_upload_prints_success(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with patch("sftp_parallel.cli.console") as mock_console:
             with pytest.raises(SystemExit) as exc_info:
@@ -110,14 +110,14 @@ class TestMainUploadSuccess:
         ]
         assert len(success_calls) > 0
 
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_upload_shows_file_count(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "a.txt").write_text("a")
         (tmp / "b.txt").write_text("b")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with patch("sftp_parallel.cli.console") as mock_console:
             with pytest.raises(SystemExit):
@@ -132,26 +132,26 @@ class TestMainUploadSuccess:
 
 
 class TestMainUploadFailure:
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_failed_upload_exits_74(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (False, 1)
+        mock_upload_files.return_value = (False, 1)
 
         with pytest.raises(SystemExit) as exc_info:
             main(["upload", str(tmp), "user@host:/remote"])
 
         assert exc_info.value.code == 74
 
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_failed_upload_prints_failure(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "test.txt").write_text("content")
-        mock_run_parallel.return_value = (False, 1)
+        mock_upload_files.return_value = (False, 1)
 
         with patch("sftp_parallel.cli.console") as mock_console:
             with pytest.raises(SystemExit):
@@ -162,15 +162,32 @@ class TestMainUploadFailure:
         ]
         assert len(failed_calls) > 0
 
+    @patch("sftp_parallel.cli.upload_files")
+    def test_failed_upload_uses_file_not_bucket(
+        self, mock_upload_files: MagicMock, tmp_path: object
+    ) -> None:
+        tmp = tmp_path  # type: ignore[attr-defined]
+        (tmp / "test.txt").write_text("content")
+        mock_upload_files.return_value = (False, 3)
+
+        with patch("sftp_parallel.cli.console") as mock_console:
+            with pytest.raises(SystemExit):
+                main(["upload", str(tmp), "user@host:/remote"])
+
+        failed_calls = [
+            c for c in mock_console.print.call_args_list if "file" in str(c)
+        ]
+        assert len(failed_calls) > 0
+
 
 class TestSingularFileMessage:
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_singular_file_count(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "only.txt").write_text("data")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with patch("sftp_parallel.cli.console") as mock_console:
             with pytest.raises(SystemExit):
@@ -184,57 +201,54 @@ class TestSingularFileMessage:
         assert len(singular_calls) > 0
 
 
-class TestBatchCommandIntegration:
-    @patch("sftp_parallel.cli.run_parallel_uploads")
-    def test_run_parallel_uploads_called_with_correct_args(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+class TestUploadFilesIntegration:
+    @patch("sftp_parallel.cli.upload_files")
+    def test_upload_files_called_with_flat_file_list(
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "alpha.txt").write_text("aaa")
         (tmp / "beta.txt").write_text("bbb")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with pytest.raises(SystemExit):
             main(["upload", str(tmp), "user@host:/data"])
 
-        call_args = mock_run_parallel.call_args
+        call_args = mock_upload_files.call_args
         assert call_args[0][0] == "user@host"
         assert call_args[0][2] == "/data"
-        buckets = call_args[0][1]
-        all_files = []
-        for bucket in buckets:
-            all_files.extend(bucket)
-        assert "alpha.txt" in all_files
-        assert "beta.txt" in all_files
+        files = call_args[0][1]
+        assert "alpha.txt" in files
+        assert "beta.txt" in files
 
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     def test_host_passed_correctly(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "file.txt").write_text("data")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with pytest.raises(SystemExit):
             main(["upload", str(tmp), "deploy@server.example.com:/var/www"])
 
-        host = mock_run_parallel.call_args[0][0]
+        host = mock_upload_files.call_args[0][0]
         assert host == "deploy@server.example.com"
 
-    @patch("sftp_parallel.cli.run_parallel_uploads")
-    def test_threads_flag_distributes_into_correct_buckets(
-        self, mock_run_parallel: MagicMock, tmp_path: object
+    @patch("sftp_parallel.cli.upload_files")
+    def test_threads_flag_sets_num_workers(
+        self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         for name in ["a.txt", "b.txt", "c.txt", "d.txt"]:
             (tmp / name).write_text("data")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with pytest.raises(SystemExit):
             main(["upload", "-t", "4", str(tmp), "user@host:/remote"])
 
-        buckets = mock_run_parallel.call_args[0][1]
-        assert len(buckets) == 4
+        call_kwargs = mock_upload_files.call_args[1]
+        assert call_kwargs["num_workers"] == 4
 
 
 class TestMainNoCommand:
@@ -281,12 +295,12 @@ class TestMainEmptyDir:
 
 
 class TestSkipExisting:
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     def test_skip_existing_filters_files(
         self,
         mock_remote_sizes: MagicMock,
-        mock_run_parallel: MagicMock,
+        mock_upload_files: MagicMock,
         tmp_path: object,
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
@@ -295,7 +309,7 @@ class TestSkipExisting:
 
         a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
         mock_remote_sizes.return_value = {"a.txt": a_size}
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with patch("sftp_parallel.cli.console"):
             with pytest.raises(SystemExit) as exc_info:
@@ -303,20 +317,16 @@ class TestSkipExisting:
 
         assert exc_info.value.code == 0
         mock_remote_sizes.assert_called_once_with("user@host", "/remote")
-        call_args = mock_run_parallel.call_args
-        buckets = call_args[0][1]
-        all_files = []
-        for bucket in buckets:
-            all_files.extend(bucket)
-        assert "b.txt" in all_files
-        assert "a.txt" not in all_files
+        files = mock_upload_files.call_args[0][1]
+        assert "b.txt" in files
+        assert "a.txt" not in files
 
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     def test_skip_existing_prints_skip_message(
         self,
         mock_remote_sizes: MagicMock,
-        mock_run_parallel: MagicMock,
+        mock_upload_files: MagicMock,
         tmp_path: object,
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
@@ -325,7 +335,7 @@ class TestSkipExisting:
 
         a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
         mock_remote_sizes.return_value = {"a.txt": a_size}
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with patch("sftp_parallel.cli.console") as mock_console:
             with pytest.raises(SystemExit):
@@ -356,17 +366,17 @@ class TestSkipExisting:
         ]
         assert len(all_exist_calls) > 0
 
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     def test_skip_existing_not_called_without_flag(
         self,
         mock_remote_sizes: MagicMock,
-        mock_run_parallel: MagicMock,
+        mock_upload_files: MagicMock,
         tmp_path: object,
     ) -> None:
         tmp = tmp_path  # type: ignore[attr-defined]
         (tmp / "a.txt").write_text("hello")
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
 
         with pytest.raises(SystemExit):
             main(["upload", str(tmp), "user@host:/remote"])
@@ -376,12 +386,12 @@ class TestSkipExisting:
 
 class TestVerifyWithSkipExisting:
     @patch("sftp_parallel.cli.verify_uploads")
-    @patch("sftp_parallel.cli.run_parallel_uploads")
+    @patch("sftp_parallel.cli.upload_files")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     def test_verify_and_skip_existing_combined(
         self,
         mock_remote_sizes: MagicMock,
-        mock_run_parallel: MagicMock,
+        mock_upload_files: MagicMock,
         mock_verify: MagicMock,
         tmp_path: object,
     ) -> None:
@@ -391,7 +401,7 @@ class TestVerifyWithSkipExisting:
 
         a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
         mock_remote_sizes.return_value = {"a.txt": a_size}
-        mock_run_parallel.return_value = (True, 0)
+        mock_upload_files.return_value = (True, 0)
         mock_verify.return_value = (["b.txt"], [])
 
         with pytest.raises(SystemExit) as exc_info:

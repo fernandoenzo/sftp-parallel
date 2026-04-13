@@ -13,10 +13,9 @@ from sftp_parallel import __version__
 from sftp_parallel.progress import advance_progress, create_upload_progress
 from sftp_parallel.signals import cleanup_signal_handlers
 from sftp_parallel.uploader import (
-    distribute_files,
     filter_existing_files,
     get_remote_file_sizes,
-    run_parallel_uploads,
+    upload_files,
 )
 from sftp_parallel.verify import verify_uploads
 
@@ -178,17 +177,16 @@ def _handle_upload(args: argparse.Namespace) -> None:
         f"to {args.destination}"
     )
 
-    buckets = distribute_files(files, args.threads)
-
-    def progress_callback(completed: int) -> None:
-        advance_progress(progress, task, completed)
+    def progress_callback(filename: str) -> None:
+        advance_progress(progress, task, filename)
 
     with create_upload_progress(num_files, host, remote_dir) as (progress, task):
-        all_success, failed_count = run_parallel_uploads(
+        all_success, failed_count = upload_files(
             host,
-            buckets,
+            files,
             remote_dir,
             local_dir,
+            num_workers=args.threads,
             timeout=10,
             progress_callback=progress_callback,
         )
@@ -223,7 +221,7 @@ def _handle_upload(args: argparse.Namespace) -> None:
         sys.exit(0)
     else:
         console.print(
-            f"[bold red]Failed:[/bold red] {failed_count} bucket"
+            f"[bold red]Failed:[/bold red] {failed_count} file"
             f"{'s' if failed_count != 1 else ''} failed"
         )
         sys.exit(74)
