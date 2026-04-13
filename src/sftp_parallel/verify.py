@@ -195,7 +195,7 @@ def verify_uploads(
         local_path = os.path.join(local_dir, filename)
         try:
             local_hash = compute_local_checksum(local_path, algorithm=algorithm)
-        except (OSError, FileNotFoundError):
+        except OSError:
             mismatched.append(filename)
             continue
 
