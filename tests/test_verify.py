@@ -22,14 +22,14 @@ from sftp_parallel.verify import (
 
 class TestComputeLocalChecksum:
     def test_sha256_of_known_content(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         f = tmp / "hello.txt"
         f.write_text("hello world")
         expected = hashlib.sha256(b"hello world").hexdigest()
         assert compute_local_checksum(str(f)) == expected
 
     def test_sha256_default_algorithm(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         f = tmp / "data.bin"
         f.write_bytes(b"\x00\x01\x02")
         assert (
@@ -38,7 +38,7 @@ class TestComputeLocalChecksum:
         )
 
     def test_md5_algorithm(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         f = tmp / "data.bin"
         f.write_bytes(b"abc")
         assert (
@@ -51,13 +51,13 @@ class TestComputeLocalChecksum:
             compute_local_checksum("/nonexistent/file.txt")
 
     def test_empty_file(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         f = tmp / "empty.txt"
         f.write_bytes(b"")
         assert compute_local_checksum(str(f)) == hashlib.sha256(b"").hexdigest()
 
     def test_large_file_chunked(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         f = tmp / "big.bin"
         content = b"x" * 20000
         f.write_bytes(content)
@@ -414,7 +414,7 @@ class TestVerifyIntegration:
     def test_verify_flag_triggers_verification(
         self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (True, 0)
         mock_verify.return_value = (["test.txt"], [])
@@ -430,7 +430,7 @@ class TestVerifyIntegration:
     def test_verify_mismatch_exits_one(
         self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (True, 0)
         mock_verify.return_value = ([], ["test.txt"])
@@ -445,7 +445,7 @@ class TestVerifyIntegration:
     def test_verify_not_called_without_flag(
         self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (True, 0)
 
@@ -459,7 +459,7 @@ class TestVerifyIntegration:
     def test_verify_all_matched_exits_zero(
         self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (True, 0)
         mock_verify.return_value = (["test.txt"], [])
@@ -474,7 +474,7 @@ class TestVerifyIntegration:
     def test_verify_mixed_results(
         self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "a.txt").write_text("aaa")
         (tmp / "b.txt").write_text("bbb")
         mock_upload_files.return_value = (True, 0)
@@ -490,7 +490,7 @@ class TestVerifyIntegration:
     def test_verify_not_called_on_failed_upload(
         self, mock_upload_files: MagicMock, mock_verify: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (False, 1)
 

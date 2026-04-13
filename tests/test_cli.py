@@ -50,7 +50,7 @@ class TestParseDestination:
 
 class TestListLocalFiles:
     def test_returns_only_regular_files(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "file1.txt").write_text("hello")
         (tmp / "file2.txt").write_text("world")
         (tmp / "subdir").mkdir()
@@ -61,7 +61,7 @@ class TestListLocalFiles:
         assert "subdir" not in files
 
     def test_returns_sorted(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "z.txt").write_text("z")
         (tmp / "a.txt").write_text("a")
 
@@ -69,7 +69,7 @@ class TestListLocalFiles:
         assert files == ["a.txt", "z.txt"]
 
     def test_empty_directory(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         assert list_local_files(str(tmp)) == []
 
     def test_nonexistent_directory_returns_empty(self) -> None:
@@ -82,7 +82,7 @@ class TestMainUploadSuccess:
     def test_successful_upload_exits_zero(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (True, 0)
 
@@ -96,7 +96,7 @@ class TestMainUploadSuccess:
     def test_upload_prints_success(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (True, 0)
 
@@ -114,7 +114,7 @@ class TestMainUploadSuccess:
     def test_upload_shows_file_count(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "a.txt").write_text("a")
         (tmp / "b.txt").write_text("b")
         mock_upload_files.return_value = (True, 0)
@@ -136,7 +136,7 @@ class TestMainUploadFailure:
     def test_failed_upload_exits_74(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (False, 1)
 
@@ -149,7 +149,7 @@ class TestMainUploadFailure:
     def test_failed_upload_prints_failure(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (False, 1)
 
@@ -166,7 +166,7 @@ class TestMainUploadFailure:
     def test_failed_upload_uses_file_not_bucket(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
         mock_upload_files.return_value = (False, 3)
 
@@ -185,7 +185,7 @@ class TestSingularFileMessage:
     def test_singular_file_count(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "only.txt").write_text("data")
         mock_upload_files.return_value = (True, 0)
 
@@ -206,7 +206,7 @@ class TestUploadFilesIntegration:
     def test_upload_files_called_with_flat_file_list(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "alpha.txt").write_text("aaa")
         (tmp / "beta.txt").write_text("bbb")
         mock_upload_files.return_value = (True, 0)
@@ -225,7 +225,7 @@ class TestUploadFilesIntegration:
     def test_host_passed_correctly(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "file.txt").write_text("data")
         mock_upload_files.return_value = (True, 0)
 
@@ -239,7 +239,7 @@ class TestUploadFilesIntegration:
     def test_threads_flag_sets_num_workers(
         self, mock_upload_files: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         for name in ["a.txt", "b.txt", "c.txt", "d.txt"]:
             (tmp / name).write_text("data")
         mock_upload_files.return_value = (True, 0)
@@ -267,7 +267,7 @@ class TestMainVersion:
 
 class TestMainInvalidDestination:
     def test_invalid_destination_exits_two(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "test.txt").write_text("content")
 
         with pytest.raises(SystemExit) as exc_info:
@@ -286,7 +286,7 @@ class TestMainNonexistentLocalDir:
 
 class TestMainEmptyDir:
     def test_empty_local_dir_exits_zero(self, tmp_path: object) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
 
         with pytest.raises(SystemExit) as exc_info:
             main(["upload", str(tmp), "user@host:/remote"])
@@ -303,7 +303,7 @@ class TestSkipExisting:
         mock_upload_files: MagicMock,
         tmp_path: object,
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "a.txt").write_text("hello")
         (tmp / "b.txt").write_text("world")
 
@@ -329,7 +329,7 @@ class TestSkipExisting:
         mock_upload_files: MagicMock,
         tmp_path: object,
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "a.txt").write_text("hello")
         (tmp / "b.txt").write_text("world")
 
@@ -350,7 +350,7 @@ class TestSkipExisting:
     def test_all_files_exist_on_remote(
         self, mock_remote_sizes: MagicMock, tmp_path: object
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "a.txt").write_text("hello")
 
         a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
@@ -374,7 +374,7 @@ class TestSkipExisting:
         mock_upload_files: MagicMock,
         tmp_path: object,
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "a.txt").write_text("hello")
         mock_upload_files.return_value = (True, 0)
 
@@ -395,7 +395,7 @@ class TestVerifyWithSkipExisting:
         mock_verify: MagicMock,
         tmp_path: object,
     ) -> None:
-        tmp = tmp_path  # type: ignore[attr-defined]
+        tmp = tmp_path
         (tmp / "a.txt").write_text("aaa")
         (tmp / "b.txt").write_text("bbb")
 
