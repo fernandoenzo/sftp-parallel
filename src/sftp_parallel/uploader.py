@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
-if TYPE_CHECKING:
-    from collections.abc import Sequence
+from sftp_parallel.batch import build_batch_commands
+from sftp_parallel.signals import cleanup_signal_handlers, setup_signal_handlers
 
 
 def distribute_files(files: list[str], num_sessions: int) -> list[list[str]]:
@@ -37,31 +37,12 @@ def distribute_files(files: list[str], num_sessions: int) -> list[list[str]]:
     >>> distribute_files([], 2)
     [[], []]
     """
+    if num_sessions <= 0:
+        raise ValueError(f"num_sessions must be positive, got {num_sessions}")
     buckets: list[list[str]] = [[] for _ in range(num_sessions)]
     for idx, file in enumerate(files):
         buckets[idx % num_sessions].append(file)
     return buckets
-
-
-def build_batch_commands(files: list[str]) -> str:
-    """Build newline-separated sftp batch directives for a list of *files*.
-
-    Each file gets a ``put`` directive.  A trailing ``bye`` is appended
-    to gracefully close the sftp session.
-
-    Parameters
-    ----------
-    files:
-        List of local file paths to upload via sftp ``put`` commands.
-
-    Returns
-    -------
-    str
-        Newline-separated sftp batch commands ready for stdin.
-    """
-    lines: list[str] = [f"put {f}" for f in files]
-    lines.append("bye")
-    return "\n".join(lines)
 
 
 def run_sftp(
@@ -121,17 +102,45 @@ def run_sftp(
 def run_parallel_uploads(
     host: str,
     buckets: list[list[str]],
+    remote_dir: str,
+    local_dir: str,
     timeout: int = 10,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> tuple[bool, int]:
-    """Spawn parallel SFTP processes, one per bucket, and collect results."""
+    """Spawn parallel SFTP processes, one per bucket, and collect results.
+
+    Parameters
+    ----------
+    host:
+        Remote host specification (e.g. ``user@host``).
+    buckets:
+        List of file buckets, where each bucket is a list of filenames
+        (basenames only) to upload in a single session.
+    remote_dir:
+        Remote directory path to upload files to.
+    local_dir:
+        Local directory path containing the files to upload.
+    timeout:
+        Connection timeout in seconds (passed as ``ConnectTimeout``).
+    progress_callback:
+        Optional callback function that receives the number of files
+        completed when each bucket finishes. Signature: ``callback(int) -> None``.
+        Typically used with :func:`sftp_parallel.progress.advance_progress`.
+
+    Returns
+    -------
+    tuple[bool, int]
+        A ``(all_success, failed_count)`` pair where *all_success* is ``True``
+        when all buckets completed successfully, and *failed_count* is the
+        number of buckets that failed.
+    """
     non_empty_buckets = [b for b in buckets if b]
     if not non_empty_buckets:
         return True, 0
 
-    proc_bucket_pairs: list[tuple[subprocess.Popen[str], str]] = []
+    proc_bucket_pairs: list[tuple[subprocess.Popen[str], list[str]]] = []
 
     for bucket in non_empty_buckets:
-        batch_commands: str = build_batch_commands(bucket)
         cmd: list[str] = [
             "sftp",
             "-N",
@@ -149,22 +158,32 @@ def run_parallel_uploads(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
-        proc_bucket_pairs.append((proc, batch_commands))
+        proc_bucket_pairs.append((proc, bucket))
 
-    failed_count: int = 0
-    for proc, batch_cmds in proc_bucket_pairs:
-        try:
-            proc.communicate(input=batch_cmds)
-        except Exception:  # noqa: BLE001
-            failed_count += 1
-            continue
+    popens = [proc for proc, _bucket in proc_bucket_pairs]
+    setup_signal_handlers(popens)
+    try:
+        failed_count: int = 0
+        for proc, bucket in proc_bucket_pairs:
+            batch_cmds = build_batch_commands(remote_dir, local_dir, bucket)
+            try:
+                proc.communicate(input=batch_cmds)
+            except Exception:  # noqa: BLE001
+                failed_count += 1
+                continue
 
-        if proc.returncode != 0:
-            failed_count += 1
+            if proc.returncode != 0:
+                failed_count += 1
+            else:
+                if progress_callback is not None:
+                    progress_callback(len(bucket))
 
-    all_success: bool = failed_count == 0
-    return all_success, failed_count
+        all_success: bool = failed_count == 0
+        return all_success, failed_count
+    finally:
+        cleanup_signal_handlers()
 
 
 def parse_ls_output(ls_output: str) -> dict[str, int]:
@@ -194,8 +213,9 @@ def parse_ls_output(ls_output: str) -> dict[str, int]:
         if not line:
             continue
         # ls -l format: permissions links owner group size month day time/year name
+        # Note: sftp may use '?' instead of a digit for the link count
         match = re.match(
-            r"^([\-ldrwx]{10})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+(.+)$",
+            r"^([\-ldrwx]{10})\s+\S+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+(.+)$",
             line,
         )
         if match:

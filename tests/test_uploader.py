@@ -4,10 +4,12 @@ import os
 import subprocess
 import tempfile
 import unittest
+
+import pytest
 from unittest.mock import MagicMock, patch
 
+from sftp_parallel.batch import build_batch_commands
 from sftp_parallel.uploader import (
-    build_batch_commands,
     distribute_files,
     filter_existing_files,
     get_remote_file_sizes,
@@ -30,6 +32,7 @@ class TestRunSftpSuccess(unittest.TestCase):
         assert "-b" in cmd
         assert "-" in cmd
         assert "user@host" in cmd
+        assert "BatchMode=yes" in cmd
 
     @patch("sftp_parallel.uploader.subprocess.run")
     def test_batch_commands_passed_as_stdin(self, mock_run: MagicMock) -> None:
@@ -113,19 +116,33 @@ class TestDistributeFiles(unittest.TestCase):
         for bucket in result:
             assert bucket == sorted(bucket, key=files.index)
 
+    def test_zero_sessions_raises(self) -> None:
+        with pytest.raises(ValueError, match="num_sessions must be positive"):
+            distribute_files(["a", "b"], 0)
+
+    def test_negative_sessions_raises(self) -> None:
+        with pytest.raises(ValueError, match="num_sessions must be positive"):
+            distribute_files(["a", "b"], -1)
+
+    def test_single_session(self) -> None:
+        result = distribute_files(["a", "b", "c"], 1)
+        assert result == [["a", "b", "c"]]
+
 
 class TestBuildBatchCommands(unittest.TestCase):
     def test_single_file(self) -> None:
-        result = build_batch_commands(["/tmp/a.txt"])
-        assert result == "put /tmp/a.txt\nbye"
+        result = build_batch_commands("/remote", "/local", ["a.txt"])
+        assert result == 'cd "/remote"\nput -f "/local/a.txt"\nbye'
 
     def test_multiple_files(self) -> None:
-        result = build_batch_commands(["a.txt", "b.txt"])
-        assert result == "put a.txt\nput b.txt\nbye"
+        result = build_batch_commands("/remote", "/local", ["a.txt", "b.txt"])
+        assert (
+            result == 'cd "/remote"\nput -f "/local/a.txt"\nput -f "/local/b.txt"\nbye'
+        )
 
     def test_empty_files(self) -> None:
-        result = build_batch_commands([])
-        assert result == "bye"
+        result = build_batch_commands("/remote", "/local", [])
+        assert result == 'cd "/remote"\nbye'
 
 
 def _make_mock_proc(returncode: int = 0) -> MagicMock:
@@ -143,7 +160,7 @@ class TestRunParallelUploadsAllSucceed(unittest.TestCase):
     def test_all_succeed(self, mock_popen: MagicMock) -> None:
         mock_popen.return_value = _make_mock_proc(returncode=0)
         success, failed = run_parallel_uploads(
-            "user@host", [["a.txt", "b.txt"], ["c.txt"]]
+            "user@host", [["a.txt", "b.txt"], ["c.txt"]], "/remote", "/local"
         )
         assert success is True
         assert failed == 0
@@ -152,17 +169,21 @@ class TestRunParallelUploadsAllSucceed(unittest.TestCase):
     @patch("sftp_parallel.uploader.subprocess.Popen")
     def test_communicate_receives_batch_commands(self, mock_popen: MagicMock) -> None:
         mock_popen.return_value = _make_mock_proc(returncode=0)
-        run_parallel_uploads("user@host", [["a.txt"], ["b.txt"]])
+        run_parallel_uploads("user@host", [["a.txt"], ["b.txt"]], "/remote", "/local")
         call_args_list = mock_popen.return_value.communicate.call_args_list
-        assert call_args_list[0][1]["input"] == "put a.txt\nbye"
-        assert call_args_list[1][1]["input"] == "put b.txt\nbye"
+        assert (
+            call_args_list[0][1]["input"] == 'cd "/remote"\nput -f "/local/a.txt"\nbye'
+        )
+        assert (
+            call_args_list[1][1]["input"] == 'cd "/remote"\nput -f "/local/b.txt"\nbye'
+        )
 
     @patch("sftp_parallel.uploader.subprocess.Popen")
     def test_sftp_command_includes_host_and_options(
         self, mock_popen: MagicMock
     ) -> None:
         mock_popen.return_value = _make_mock_proc(returncode=0)
-        run_parallel_uploads("user@host", [["a.txt"]], timeout=30)
+        run_parallel_uploads("user@host", [["a.txt"]], "/remote", "/local", timeout=30)
         cmd = mock_popen.call_args[0][0]
         assert cmd[0] == "sftp"
         assert "-N" in cmd
@@ -178,7 +199,9 @@ class TestRunParallelUploadsSomeFail(unittest.TestCase):
     def test_some_fail(self, mock_popen: MagicMock) -> None:
         procs = [_make_mock_proc(returncode=0), _make_mock_proc(returncode=1)]
         mock_popen.side_effect = procs
-        success, failed = run_parallel_uploads("user@host", [["a.txt"], ["b.txt"]])
+        success, failed = run_parallel_uploads(
+            "user@host", [["a.txt"], ["b.txt"]], "/remote", "/local"
+        )
         assert success is False
         assert failed == 1
 
@@ -186,7 +209,9 @@ class TestRunParallelUploadsSomeFail(unittest.TestCase):
     def test_all_fail(self, mock_popen: MagicMock) -> None:
         procs = [_make_mock_proc(returncode=1), _make_mock_proc(returncode=2)]
         mock_popen.side_effect = procs
-        success, failed = run_parallel_uploads("user@host", [["a.txt"], ["b.txt"]])
+        success, failed = run_parallel_uploads(
+            "user@host", [["a.txt"], ["b.txt"]], "/remote", "/local"
+        )
         assert success is False
         assert failed == 2
 
@@ -197,7 +222,9 @@ class TestRunParallelUploadsSomeFail(unittest.TestCase):
         proc = _make_mock_proc(returncode=0)
         proc.communicate.side_effect = OSError("broken pipe")
         mock_popen.return_value = proc
-        success, failed = run_parallel_uploads("user@host", [["a.txt"]])
+        success, failed = run_parallel_uploads(
+            "user@host", [["a.txt"]], "/remote", "/local"
+        )
         assert success is False
         assert failed == 1
 
@@ -205,7 +232,9 @@ class TestRunParallelUploadsSomeFail(unittest.TestCase):
 class TestRunParallelUploadsEmptyBuckets(unittest.TestCase):
     @patch("sftp_parallel.uploader.subprocess.Popen")
     def test_empty_buckets_skipped(self, mock_popen: MagicMock) -> None:
-        success, failed = run_parallel_uploads("user@host", [[], [], []])
+        success, failed = run_parallel_uploads(
+            "user@host", [[], [], []], "/remote", "/local"
+        )
         assert success is True
         assert failed == 0
         mock_popen.assert_not_called()
@@ -213,14 +242,16 @@ class TestRunParallelUploadsEmptyBuckets(unittest.TestCase):
     @patch("sftp_parallel.uploader.subprocess.Popen")
     def test_mixed_empty_and_nonempty(self, mock_popen: MagicMock) -> None:
         mock_popen.return_value = _make_mock_proc(returncode=0)
-        success, failed = run_parallel_uploads("user@host", [["a.txt"], [], ["b.txt"]])
+        success, failed = run_parallel_uploads(
+            "user@host", [["a.txt"], [], ["b.txt"]], "/remote", "/local"
+        )
         assert success is True
         assert failed == 0
         assert mock_popen.call_count == 2
 
     @patch("sftp_parallel.uploader.subprocess.Popen")
     def test_completely_empty_list(self, mock_popen: MagicMock) -> None:
-        success, failed = run_parallel_uploads("user@host", [])
+        success, failed = run_parallel_uploads("user@host", [], "/remote", "/local")
         assert success is True
         assert failed == 0
         mock_popen.assert_not_called()
@@ -262,6 +293,26 @@ class TestParseLsOutput(unittest.TestCase):
     def test_zero_size_file(self) -> None:
         result = parse_ls_output("-rw-r--r-- 1 user group 0 Jan  1 12:00 empty.dat\n")
         assert result == {"empty.dat": 0}
+
+    def test_directory_line_not_excluded(self) -> None:
+        """Directory lines (d prefix) are parsed by the regex and included.
+
+        This documents current behavior — parse_ls_output does not
+        distinguish files from directories.
+        """
+        result = parse_ls_output("drwxr-xr-x 2 user group 4096 Jan  1 12:00 subdir\n")
+        assert "subdir" in result
+        assert result["subdir"] == 4096
+
+    def test_symlink_line_not_excluded(self) -> None:
+        """Symlink lines (l prefix) are parsed by the regex and included.
+
+        This documents current behavior — parse_ls_output does not
+        distinguish files from symlinks.
+        """
+        result = parse_ls_output("lrwxrwxrwx 1 user group 5 Jan  1 12:00 link.txt\n")
+        assert "link.txt" in result
+        assert result["link.txt"] == 5
 
 
 class TestGetRemoteFileSizes(unittest.TestCase):
