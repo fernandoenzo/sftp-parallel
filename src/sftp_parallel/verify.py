@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shlex
 import subprocess
 
 
@@ -113,8 +114,8 @@ def compute_remote_checksums(
         return {}
 
     sum_cmd = f"{algorithm}sum"
-    files_str = " ".join(f'"{f}"' for f in filenames)
-    remote_cmd = f'cd "{remote_dir}" && {sum_cmd} {files_str}'
+    files_str = " ".join(shlex.quote(f) for f in filenames)
+    remote_cmd = f"cd {shlex.quote(remote_dir)} && {sum_cmd} {files_str}"
 
     cmd: list[str] = [
         "ssh",

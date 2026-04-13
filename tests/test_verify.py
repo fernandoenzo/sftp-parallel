@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import shlex
+
 from sftp_parallel.cli import main
 from sftp_parallel.verify import (
     compute_local_checksum,
@@ -172,8 +174,9 @@ class TestComputeRemoteChecksums:
         result = compute_remote_checksums("user@host", "/remote", ["a.txt", "b.txt"])
         assert result == {"a.txt": "h1", "b.txt": "h2"}
         remote_cmd = mock_run.call_args[0][0][-1]
-        assert '"a.txt"' in remote_cmd
-        assert '"b.txt"' in remote_cmd
+        # shlex.quote leaves safe names unquoted, only quotes dangerous ones
+        assert "a.txt" in remote_cmd
+        assert "b.txt" in remote_cmd
 
     @patch("sftp_parallel.verify.subprocess.run")
     def test_custom_algorithm(self, mock_run: MagicMock) -> None:
@@ -191,6 +194,79 @@ class TestComputeRemoteChecksums:
         compute_remote_checksums("user@host", "/remote", ["a.txt"])
         cmd = mock_run.call_args[0][0]
         assert "BatchMode=yes" in cmd
+
+    @patch("sftp_parallel.verify.subprocess.run")
+    def test_filename_with_spaces_escaped(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="h1  /remote/file with spaces.txt\n"
+        )
+        compute_remote_checksums("user@host", "/remote", ["file with spaces.txt"])
+        remote_cmd = mock_run.call_args[0][0][-1]
+        assert shlex.quote("file with spaces.txt") in remote_cmd
+        assert '"file with spaces.txt"' not in remote_cmd
+
+    @patch("sftp_parallel.verify.subprocess.run")
+    def test_filename_with_semicolon_escaped(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        compute_remote_checksums("user@host", "/remote", ["file;rm -rf /.txt"])
+        remote_cmd = mock_run.call_args[0][0][-1]
+        assert shlex.quote("file;rm -rf /.txt") in remote_cmd
+        assert ";rm" not in remote_cmd or "'" in remote_cmd
+
+    @patch("sftp_parallel.verify.subprocess.run")
+    def test_filename_with_command_substitution_escaped(
+        self, mock_run: MagicMock
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        compute_remote_checksums("user@host", "/remote", ["file$(whoami).txt"])
+        remote_cmd = mock_run.call_args[0][0][-1]
+        assert shlex.quote("file$(whoami).txt") in remote_cmd
+        assert "$(" not in remote_cmd or "'" in remote_cmd.split("$(")[0]
+
+    @patch("sftp_parallel.verify.subprocess.run")
+    def test_filename_with_single_quote_escaped(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        compute_remote_checksums("user@host", "/remote", ["file'quoted.txt"])
+        remote_cmd = mock_run.call_args[0][0][-1]
+        assert shlex.quote("file'quoted.txt") in remote_cmd
+
+    @patch("sftp_parallel.verify.subprocess.run")
+    def test_filename_with_backslash_escaped(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        compute_remote_checksums("user@host", "/remote", ["file\\backslash.txt"])
+        remote_cmd = mock_run.call_args[0][0][-1]
+        assert shlex.quote("file\\backslash.txt") in remote_cmd
+
+    @patch("sftp_parallel.verify.subprocess.run")
+    def test_filename_with_double_quote_escaped(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        compute_remote_checksums("user@host", "/remote", ['file"quote.txt'])
+        remote_cmd = mock_run.call_args[0][0][-1]
+        assert shlex.quote('file"quote.txt') in remote_cmd
+        assert '"file"quote.txt"' not in remote_cmd
+
+    @patch("sftp_parallel.verify.subprocess.run")
+    def test_remote_dir_with_shell_metachar_escaped(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        compute_remote_checksums("user@host", "/remote;rm -rf /", ["a.txt"])
+        remote_cmd = mock_run.call_args[0][0][-1]
+        assert shlex.quote("/remote;rm -rf /") in remote_cmd
+
+    @patch("sftp_parallel.verify.subprocess.run")
+    def test_multiple_malicious_filenames_all_escaped(
+        self, mock_run: MagicMock
+    ) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        bad_files = [
+            "file with spaces.txt",
+            "file;rm.txt",
+            "file$(cmd).txt",
+            "file'q.txt",
+        ]
+        compute_remote_checksums("user@host", "/remote", bad_files)
+        remote_cmd = mock_run.call_args[0][0][-1]
+        for f in bad_files:
+            assert shlex.quote(f) in remote_cmd
 
 
 class TestVerifyUploads:
