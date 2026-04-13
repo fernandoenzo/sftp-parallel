@@ -10,12 +10,15 @@ from typing import Optional
 from rich.console import Console
 
 from sftp_parallel import __version__
-from sftp_parallel.batch import build_batch_commands
+from sftp_parallel.progress import advance_progress, create_upload_progress
+from sftp_parallel.signals import cleanup_signal_handlers
 from sftp_parallel.uploader import (
+    distribute_files,
     filter_existing_files,
     get_remote_file_sizes,
-    run_sftp,
+    run_parallel_uploads,
 )
+from sftp_parallel.verify import verify_uploads
 
 console = Console()
 
@@ -115,13 +118,6 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="skip_existing",
         help="skip files that exist on remote with same size",
     )
-    upload_parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="enable debug output",
-    )
-
     return parser
 
 
@@ -142,7 +138,7 @@ def _handle_upload(args: argparse.Namespace) -> None:
         host, remote_dir = parse_destination(args.destination)
     except ValueError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
-        sys.exit(1)
+        sys.exit(2)
 
     local_dir = os.path.abspath(args.local_dir)
 
@@ -150,7 +146,7 @@ def _handle_upload(args: argparse.Namespace) -> None:
         console.print(
             f"[bold red]Error:[/bold red] local directory '{local_dir}' does not exist"
         )
-        sys.exit(1)
+        sys.exit(2)
 
     files = list_local_files(local_dir)
     if not files:
@@ -176,26 +172,61 @@ def _handle_upload(args: argparse.Namespace) -> None:
             console.print("[bold green]All files already exist on remote.[/bold green]")
             sys.exit(0)
 
+    num_files = len(files)
     console.print(
-        f"Uploading {len(files)} file{'s' if len(files) != 1 else ''} "
+        f"Uploading {num_files} file{'s' if num_files != 1 else ''} "
         f"to {args.destination}"
     )
 
-    batch_commands = build_batch_commands(remote_dir, local_dir, files)
-    success, output = run_sftp(host, batch_commands)
+    buckets = distribute_files(files, args.threads)
 
-    if success:
+    def progress_callback(completed: int) -> None:
+        advance_progress(progress, task, completed)
+
+    with create_upload_progress(num_files, host, remote_dir) as (progress, task):
+        all_success, failed_count = run_parallel_uploads(
+            host,
+            buckets,
+            remote_dir,
+            local_dir,
+            timeout=10,
+            progress_callback=progress_callback,
+        )
+
+    cleanup_signal_handlers()
+
+    if all_success:
         console.print("[bold green]Success[/bold green]")
+
+        if args.verify:
+            console.print("Verifying checksums...")
+            matched, mismatched = verify_uploads(host, remote_dir, local_dir, files)
+
+            for f in matched:
+                console.print(f"[bold green]✓[/bold green] {f}")
+            for f in mismatched:
+                console.print(f"[bold red]✗[/bold red] {f}")
+
+            if matched:
+                console.print(
+                    f"[green]{len(matched)} file{'s' if len(matched) != 1 else ''}"
+                    f" verified[/green]"
+                )
+            if mismatched:
+                console.print(
+                    f"[bold red]{len(mismatched)} file"
+                    f"{'s' if len(mismatched) != 1 else ''}"
+                    f" FAILED verification[/bold red]"
+                )
+                sys.exit(1)
+
         sys.exit(0)
     else:
-        failed_count = len(files)
         console.print(
-            f"[bold red]Failed:[/bold red] {failed_count} file"
+            f"[bold red]Failed:[/bold red] {failed_count} bucket"
             f"{'s' if failed_count != 1 else ''} failed"
         )
-        if args.verbose and output:
-            console.print(f"[dim]{output}[/dim]")
-        sys.exit(1)
+        sys.exit(74)
 
 
 if __name__ == "__main__":
