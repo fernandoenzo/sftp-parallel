@@ -215,12 +215,12 @@ def parse_ls_output(ls_output: str) -> dict[str, int]:
         # ls -l format: permissions links owner group size month day time/year name
         # Note: sftp may use '?' instead of a digit for the link count
         match = re.match(
-            r"^([\-ldrwx]{10})\s+\S+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+(.+)$",
+            r"^-[-rwx]{9}\s+\S+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+(.+)$",
             line,
         )
         if match:
-            size = int(match.group(2))
-            name = match.group(3).strip()
+            size = int(match.group(1))
+            name = match.group(2).strip()
             result[name] = size
     return result
 

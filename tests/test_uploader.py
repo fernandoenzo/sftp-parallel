@@ -294,25 +294,22 @@ class TestParseLsOutput(unittest.TestCase):
         result = parse_ls_output("-rw-r--r-- 1 user group 0 Jan  1 12:00 empty.dat\n")
         assert result == {"empty.dat": 0}
 
-    def test_directory_line_not_excluded(self) -> None:
-        """Directory lines (d prefix) are parsed by the regex and included.
-
-        This documents current behavior — parse_ls_output does not
-        distinguish files from directories.
-        """
+    def test_parse_ls_output_ignores_directories(self) -> None:
         result = parse_ls_output("drwxr-xr-x 2 user group 4096 Jan  1 12:00 subdir\n")
-        assert "subdir" in result
-        assert result["subdir"] == 4096
+        assert result == {}
 
-    def test_symlink_line_not_excluded(self) -> None:
-        """Symlink lines (l prefix) are parsed by the regex and included.
+    def test_parse_ls_output_ignores_symlinks(self) -> None:
+        result = parse_ls_output(
+            "lrwxrwxrwx 1 user group 5 Jan  1 12:00 link -> target\n"
+        )
+        assert result == {}
 
-        This documents current behavior — parse_ls_output does not
-        distinguish files from symlinks.
-        """
-        result = parse_ls_output("lrwxrwxrwx 1 user group 5 Jan  1 12:00 link.txt\n")
-        assert "link.txt" in result
-        assert result["link.txt"] == 5
+    def test_parse_ls_output_ignores_symlinks(self) -> None:
+        """Symlink lines (l prefix) must be filtered out."""
+        result = parse_ls_output(
+            "lrwxrwxrwx 1 user group 5 Jan  1 12:00 link -> target\n"
+        )
+        assert result == {}
 
 
 class TestGetRemoteFileSizes(unittest.TestCase):
