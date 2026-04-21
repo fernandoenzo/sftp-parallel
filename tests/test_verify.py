@@ -116,3 +116,25 @@ class TestVerifyUploads:
             # We can't easily control the local hash, so just test structure
             matched, mismatched = verify_uploads("user@host", "/remote", tmpdir, ["a.txt"], port=22)
             assert len(matched) + len(mismatched) == 1
+
+    @patch("sftp_parallel.verify.compute_remote_checksums")
+    def test_mismatch(self, mock_remote):
+        mock_remote.return_value = {"a.txt": "wrong_hash"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = os.path.join(tmpdir, "a.txt")
+            with open(f, "w") as fh:
+                fh.write("content")
+            matched, mismatched = verify_uploads("user@host", "/remote", tmpdir, ["a.txt"], port=22)
+            assert "a.txt" in mismatched
+            assert "a.txt" not in matched
+
+    @patch("sftp_parallel.verify.compute_remote_checksums")
+    def test_ssh_failure_treats_as_mismatch(self, mock_remote):
+        mock_remote.return_value = None
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = os.path.join(tmpdir, "a.txt")
+            with open(f, "w") as fh:
+                fh.write("content")
+            matched, mismatched = verify_uploads("user@host", "/remote", tmpdir, ["a.txt"], port=22)
+            assert "a.txt" in mismatched
+            assert len(matched) == 0

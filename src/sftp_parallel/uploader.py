@@ -23,6 +23,7 @@ from sftp_parallel.batch import (
     validate_host,
     validate_port,
     validate_remote_dir,
+    _validate_sftp_path,
 )
 from sftp_parallel.signals import cleanup_signal_handlers, setup_signal_handlers
 
@@ -339,6 +340,7 @@ def get_remote_file_sizes(
     validate_host(host)
     validate_port(port)
     validate_remote_dir(remote_dir)
+    _validate_sftp_path(remote_dir, "remote directory")
 
     batch_commands: str = f'cd "{sftp_escape(remote_dir)}"\nls -l\nbye'
     success, output = run_sftp(host, batch_commands, timeout=timeout, port=port)

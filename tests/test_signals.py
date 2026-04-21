@@ -62,9 +62,11 @@ class TestMakeSignalHandler:
             with pytest.raises(SystemExit):
                 handler(signal.SIGINT, None)
             # pgid <= 1 should not be killed
-            [c for c in mock_killpg.call_args_list if c[0][1] in (signal.SIGTERM, signal.SIGKILL)]
-            # The only killpg call should be for SIGKILL after wait timeout, also with pgid > 1
-            # Since pgid=1, no killpg should be called for this process
+            killpg_calls = [
+                c for c in mock_killpg.call_args_list
+                if c[0][1] in (signal.SIGTERM, signal.SIGKILL)
+            ]
+            assert len(killpg_calls) == 0
 
     def test_handler_reentrancy_guard(self):
         popens: list[tuple[subprocess.Popen[str], int]] = []

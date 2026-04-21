@@ -192,3 +192,14 @@ class TestThreadsValidation:
     def test_invalid_threads(self):
         with pytest.raises(SystemExit):
             main(["-s", "user@host", "-f", "a.txt", "-t", "0"])
+
+
+class TestUploadFailure:
+    @patch("sftp_parallel.cli.resolve_file_patterns")
+    @patch("sftp_parallel.cli.upload_files")
+    def test_exit_74_on_upload_failure(self, mock_upload, mock_resolve):
+        mock_resolve.return_value = [Path("/tmp/a.txt")]
+        mock_upload.return_value = (False, 1)
+        with pytest.raises(SystemExit) as exc_info:
+            main(["-s", "user@host", "-f", "a.txt"])
+        assert exc_info.value.code == 74
