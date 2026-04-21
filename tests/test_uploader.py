@@ -58,6 +58,15 @@ class TestCleanupProc:
         with patch("sftp_parallel.uploader.os.killpg"):
             _cleanup_proc(mock_popen_for_cleanup, pgid=5000)
 
+    def test_process_already_dead(self, mock_popen_for_cleanup):
+        """When os.getpgid raises ProcessLookupError, pgid becomes -1 and killpg is skipped."""
+        mock_popen_for_cleanup.pid = 12345
+        with patch("sftp_parallel.uploader.os.getpgid", side_effect=ProcessLookupError) as mock_getpgid, \
+             patch("sftp_parallel.uploader.os.killpg") as mock_killpg:
+            _cleanup_proc(mock_popen_for_cleanup, pgid=0)
+            mock_getpgid.assert_called_with(12345)
+            mock_killpg.assert_not_called()
+
 
 # --- parse_ls_output ---
 

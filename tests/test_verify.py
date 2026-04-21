@@ -61,6 +61,10 @@ class TestParseChecksumOutput:
         result = parse_checksum_output(output)
         assert result == {"a.txt": "hash1", "b.txt": "hash2"}
 
+    def test_all_unparseable_returns_empty(self):
+        result = parse_checksum_output("garbage line 1\ngarbage line 2\n")
+        assert result == {}
+
 
 # --- compute_remote_checksums ---
 
