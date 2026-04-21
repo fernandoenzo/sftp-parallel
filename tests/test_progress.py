@@ -132,8 +132,9 @@ class TestAdvanceProgress:
 class TestProgressIntegration:
     """Integration tests for progress with upload_files."""
 
+    @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
     @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_progress_callback_advances_per_file(self, mock_popen: MagicMock) -> None:
+    def test_progress_callback_advances_per_file(self, mock_popen: MagicMock, mock_getpgid: MagicMock) -> None:
         """Progress callback advances per file with upload_files."""
         from sftp_parallel.uploader import upload_files
 
@@ -157,17 +158,17 @@ class TestProgressIntegration:
                 "user@host",
                 files,
                 "/remote",
-                "/local",
                 num_workers=2,
-                timeout=10,
+                port=22,
                 progress_callback=progress_callback,
             )
 
         task = progress._tasks[task_id]
         assert task.completed == 5
 
+    @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
     @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_failed_file_does_not_advance_progress(self, mock_popen: MagicMock) -> None:
+    def test_failed_file_does_not_advance_progress(self, mock_popen: MagicMock, mock_getpgid: MagicMock) -> None:
         """Failed file upload does not trigger progress advance."""
         from sftp_parallel.uploader import upload_files
 
@@ -186,9 +187,8 @@ class TestProgressIntegration:
                 "user@host",
                 ["a.txt", "b.txt"],
                 "/remote",
-                "/local",
                 num_workers=2,
-                timeout=10,
+                port=22,
                 progress_callback=progress_callback,
             )
 
@@ -197,8 +197,9 @@ class TestProgressIntegration:
         task = progress._tasks[task_id]
         assert task.completed == 0
 
+    @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
     @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_mixed_success_and_failure(self, mock_popen: MagicMock) -> None:
+    def test_mixed_success_and_failure(self, mock_popen: MagicMock, mock_getpgid: MagicMock) -> None:
         """Only successful uploads advance progress."""
         from sftp_parallel.uploader import upload_files
 
@@ -229,17 +230,17 @@ class TestProgressIntegration:
                 "user@host",
                 files,
                 "/remote",
-                "/local",
                 num_workers=2,
-                timeout=10,
+                port=22,
                 progress_callback=progress_callback,
             )
 
         task = progress._tasks[task_id]
         assert task.completed == 2
 
+    @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
     @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_no_progress_callback_works_normally(self, mock_popen: MagicMock) -> None:
+    def test_no_progress_callback_works_normally(self, mock_popen: MagicMock, mock_getpgid: MagicMock) -> None:
         """Upload works without progress callback."""
         from sftp_parallel.uploader import upload_files
 
@@ -253,9 +254,9 @@ class TestProgressIntegration:
             "user@host",
             ["a.txt", "b.txt"],
             "/remote",
-            "/local",
+
             num_workers=2,
-            timeout=10,
+            port=22,
             progress_callback=None,
         )
 
@@ -279,9 +280,8 @@ class TestProgressWithEmptyFiles:
                 "user@host",
                 [],
                 "/remote",
-                "/local",
                 num_workers=2,
-                timeout=10,
+                port=22,
                 progress_callback=progress_callback,
             )
 

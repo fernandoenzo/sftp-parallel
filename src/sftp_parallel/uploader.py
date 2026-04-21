@@ -1,54 +1,90 @@
 """SFTP uploader module – subprocess wrapper for single sftp invocation."""
 
+# Error handling convention: Functions return (bool, str/int) tuples.
+
 from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from sftp_parallel.batch import build_batch_commands
+from sftp_parallel.batch import (
+    DEFAULT_TIMEOUT,
+    build_batch_commands,
+    sftp_escape,
+    validate_filename,
+    validate_host,
+    validate_port,
+    validate_remote_dir,
+)
 from sftp_parallel.signals import cleanup_signal_handlers, setup_signal_handlers
 
+_PROCESS_KILL_WAIT_SECONDS = 5
+_SFTP_TIMEOUT_MULTIPLIER = 3
+_MIN_TRANSFER_RATE = 256 * 1024
+_CONNECTION_OVERHEAD = 10
 
-def distribute_files(files: list[str], num_sessions: int) -> list[list[str]]:
-    """Distribute *files* across *num_sessions* buckets in round-robin fashion.
+
+def _build_sftp_cmd(host: str, timeout: int, port: int = 22) -> list[str]:
+    """Build the sftp command-line arguments list."""
+    return [
+        "sftp",
+        "-N",
+        "-o",
+        f"ConnectTimeout={timeout}",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        f"Port={port}",
+        "-b",
+        "-",
+        host,
+    ]
+
+
+def _cleanup_proc(proc: subprocess.Popen[str], pgid: int = 0) -> None:
+    """Kill a subprocess and close its pipes, swallowing all errors.
 
     Parameters
     ----------
-    files:
-        List of file paths to distribute.
-    num_sessions:
-        Number of parallel sessions (buckets) to distribute into.
-
-    Returns
-    -------
-    list[list[str]]
-        A list of *num_sessions* buckets.  Each bucket contains the files
-        assigned to that session.  Bucket *i* receives files at indices
-        ``i, i+num_sessions, i+2*num_sessions, …``.
-
-    Examples
-    --------
-    >>> distribute_files(['a', 'b', 'c', 'd', 'e'], 2)
-    [['a', 'c', 'e'], ['b', 'd']]
-    >>> distribute_files(['a', 'b', 'c'], 4)
-    [['a'], ['b'], ['c'], []]
-    >>> distribute_files([], 2)
-    [[], []]
+    proc:
+        The Popen process to clean up.
+    pgid:
+        Cached process group ID.  If greater than 1, used directly
+        instead of re-fetching via :func:`os.getpgid` (avoids PID
+        recycling race).  If 0, falls back to ``os.getpgid(proc.pid)``.
     """
-    if num_sessions <= 0:
-        raise ValueError(f"num_sessions must be positive, got {num_sessions}")
-    buckets: list[list[str]] = [[] for _ in range(num_sessions)]
-    for idx, file in enumerate(files):
-        buckets[idx % num_sessions].append(file)
-    return buckets
+    if pgid <= 1:
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            pgid = -1
+    if pgid > 1:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+    for pipe in (proc.stdin, proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=_PROCESS_KILL_WAIT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def run_sftp(
     host: str,
     batch_commands: str,
     timeout: int = 10,
+    port: int = 22,
 ) -> tuple[bool, str]:
     """Invoke ``sftp -N -b -`` with *batch_commands* piped via stdin.
 
@@ -60,103 +96,23 @@ def run_sftp(
         Newline-separated sftp batch directives to send on stdin.
     timeout:
         Connection timeout in seconds (passed as ``ConnectTimeout``).
+    port:
+        Remote port number.
 
     Returns
     -------
     tuple[bool, str]
         A ``(success, output)`` pair where *success* is ``True`` when the
-        sftp process exited with code 0, and *output* combines stdout and
-        stderr for diagnostics.
+        sftp process exited with code 0.
     """
-    cmd: list[str] = [
-        "sftp",
-        "-N",
-        "-o",
-        f"ConnectTimeout={timeout}",
-        "-o",
-        "BatchMode=yes",
-        "-b",
-        "-",
-        host,
-    ]
+    validate_host(host)
+    validate_port(port)
+
+    cmd = _build_sftp_cmd(host, timeout, port=port)
+    proc: subprocess.Popen[str] | None = None
 
     try:
-        result = subprocess.run(
-            cmd,
-            input=batch_commands,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError:
-        return False, "sftp binary not found"
-    except subprocess.TimeoutExpired:
-        return False, "sftp process timed out"
-    except OSError as exc:
-        return False, f"OS error: {exc}"
-
-    output: str = result.stdout + result.stderr
-    success: bool = result.returncode == 0
-    return success, output
-
-
-def run_parallel_uploads(
-    host: str,
-    buckets: list[list[str]],
-    remote_dir: str,
-    local_dir: str,
-    timeout: int = 10,
-    progress_callback: Callable[[int], None] | None = None,
-) -> tuple[bool, int]:
-    """Spawn parallel SFTP processes, one per bucket, and collect results.
-
-    .. deprecated::
-        Use :func:`upload_files` instead, which provides per-file progress
-        and true parallelism via a worker queue.
-
-    Parameters
-    ----------
-    host:
-        Remote host specification (e.g. ``user@host``).
-    buckets:
-        List of file buckets, where each bucket is a list of filenames
-        (basenames only) to upload in a single session.
-    remote_dir:
-        Remote directory path to upload files to.
-    local_dir:
-        Local directory path containing the files to upload.
-    timeout:
-        Connection timeout in seconds (passed as ``ConnectTimeout``).
-    progress_callback:
-        Optional callback function that receives the number of files
-        completed when each bucket finishes. Signature: ``callback(int) -> None``.
-        Typically used with :func:`sftp_parallel.progress.advance_progress`.
-
-    Returns
-    -------
-    tuple[bool, int]
-        A ``(all_success, failed_count)`` pair where *all_success* is ``True``
-        when all buckets completed successfully, and *failed_count* is the
-        number of buckets that failed.
-    """
-    non_empty_buckets = [b for b in buckets if b]
-    if not non_empty_buckets:
-        return True, 0
-
-    proc_bucket_pairs: list[tuple[subprocess.Popen[str], list[str]]] = []
-
-    for bucket in non_empty_buckets:
-        cmd: list[str] = [
-            "sftp",
-            "-N",
-            "-o",
-            f"ConnectTimeout={timeout}",
-            "-o",
-            "BatchMode=yes",
-            "-b",
-            "-",
-            host,
-        ]
-        proc: subprocess.Popen[str] = subprocess.Popen(
+        proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -164,61 +120,51 @@ def run_parallel_uploads(
             text=True,
             start_new_session=True,
         )
-        proc_bucket_pairs.append((proc, bucket))
+        try:
+            stdout, stderr = proc.communicate(
+                input=batch_commands,
+                timeout=timeout * _SFTP_TIMEOUT_MULTIPLIER,
+            )
+        except subprocess.TimeoutExpired:
+            _cleanup_proc(proc)
+            return False, "sftp process timed out"
+    except FileNotFoundError:
+        return False, "sftp binary not found"
+    except OSError as exc:
+        if proc is not None:
+            _cleanup_proc(proc)
+        return False, f"OS error: {exc}"
 
-    popens = [proc for proc, _bucket in proc_bucket_pairs]
-    setup_signal_handlers(popens)
-    try:
-        failed_count: int = 0
-        for proc, bucket in proc_bucket_pairs:
-            batch_cmds = build_batch_commands(remote_dir, local_dir, bucket)
-            try:
-                proc.communicate(input=batch_cmds)
-            except Exception:  # noqa: BLE001
-                failed_count += 1
-                continue
-
-            if proc.returncode != 0:
-                failed_count += 1
-            else:
-                if progress_callback is not None:
-                    progress_callback(len(bucket))
-
-        all_success: bool = failed_count == 0
-        return all_success, failed_count
-    finally:
-        cleanup_signal_handlers()
+    output = stdout + stderr
+    success = proc.returncode == 0
+    return success, output
 
 
 def upload_files(
     host: str,
-    files: list[str],
+    file_paths: list[str],
     remote_dir: str,
-    local_dir: str,
     num_workers: int = 2,
-    timeout: int = 10,
+    port: int = 22,
     progress_callback: Callable[[str], None] | None = None,
 ) -> tuple[bool, int]:
     """Upload files using *num_workers* parallel sftp sessions.
 
     Each worker picks one file from a shared queue, opens an sftp
     session, uploads that single file with ``put -f``, then picks the next.
-    Progress advances per-file, giving real-time visibility.
 
     Parameters
     ----------
     host:
         Remote host specification (e.g. ``user@host``).
-    files:
-        List of filenames (basenames only) to upload.
+    file_paths:
+        List of local file paths to upload.
     remote_dir:
         Remote directory path to upload files to.
-    local_dir:
-        Local directory path containing the files to upload.
     num_workers:
         Number of parallel worker threads (default 2).
-    timeout:
-        Connection timeout in seconds (passed as ``ConnectTimeout``).
+    port:
+        Remote port number.
     progress_callback:
         Optional callback invoked per successfully uploaded file with
         the filename.  Signature: ``callback(str) -> None``.
@@ -229,63 +175,73 @@ def upload_files(
         ``(all_success, failed_count)`` where *all_success* is ``True``
         when every file uploaded successfully.
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    import threading
+    validate_host(host)
+    validate_port(port)
+    validate_remote_dir(remote_dir)
 
-    if not files:
+    if not file_paths:
         return True, 0
 
-    file_queue = list(files)
-    failed_count = 0
     lock = threading.Lock()
-    active_popens: list[subprocess.Popen[str]] = []
+    active_popens: list[tuple[subprocess.Popen[str], int]] = []
     popen_lock = threading.Lock()
+    timeout = DEFAULT_TIMEOUT
 
-    def upload_one(filename: str) -> bool:
-        batch_cmds = build_batch_commands(remote_dir, local_dir, [filename])
-        cmd: list[str] = [
-            "sftp",
-            "-N",
-            "-o",
-            f"ConnectTimeout={timeout}",
-            "-o",
-            "BatchMode=yes",
-            "-b",
-            "-",
-            host,
-        ]
-        proc: subprocess.Popen[str] = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        with popen_lock:
-            active_popens.append(proc)
+    def upload_one(file_path: str) -> bool:
+        proc: subprocess.Popen[str] | None = None
+        pgid = 0
         try:
-            proc.communicate(input=batch_cmds, timeout=timeout * 3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            return False
-        except Exception:  # noqa: BLE001
-            return False
-        finally:
+            batch_cmds = build_batch_commands(remote_dir, [file_path])
+            cmd = _build_sftp_cmd(host, timeout, port=port)
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            pgid = os.getpgid(proc.pid)
             with popen_lock:
-                if proc in active_popens:
-                    active_popens.remove(proc)
-        if proc.returncode != 0:
+                active_popens.append((proc, pgid))
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError:
+                file_size = 0
+            transfer_timeout = max(
+                timeout * _SFTP_TIMEOUT_MULTIPLIER,
+                int(file_size / _MIN_TRANSFER_RATE) + _CONNECTION_OVERHEAD,
+            )
+            try:
+                proc.communicate(input=batch_cmds, timeout=transfer_timeout)
+            except subprocess.TimeoutExpired:
+                _cleanup_proc(proc, pgid)
+                return False
+            except Exception:  # noqa: BLE001
+                _cleanup_proc(proc, pgid)
+                return False
+            finally:
+                with popen_lock:
+                    if (proc, pgid) in active_popens:
+                        active_popens.remove((proc, pgid))
+            if proc.returncode != 0:
+                return False
+            if progress_callback is not None:
+                try:
+                    progress_callback(file_path)
+                except Exception:  # noqa: BLE001
+                    pass
+            return True
+        except Exception:  # noqa: BLE001
+            if proc is not None:
+                _cleanup_proc(proc, pgid)
             return False
-        if progress_callback is not None:
-            progress_callback(filename)
-        return True
 
-    setup_signal_handlers(active_popens)
+    setup_signal_handlers(active_popens, popen_lock)
     try:
+        failed_count = 0
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(upload_one, f): f for f in file_queue}
+            futures = {executor.submit(upload_one, fp): fp for fp in file_paths}
             for future in as_completed(futures):
                 if not future.result():
                     with lock:
@@ -297,41 +253,38 @@ def upload_files(
 
 
 def parse_ls_output(ls_output: str) -> dict[str, int]:
-    """Parse ``ls -l`` output from SFTP into a filename → size mapping.
+    """Parse ``ls -l`` output from SFTP into a filename -> size mapping.
 
     Parameters
     ----------
     ls_output:
-        Raw output from ``ls -l`` run inside an SFTP session.  Each line
-        has the standard format::
-
-            -rw-r--r--   1 user     group        1234 Jan  1 12:00 file.txt
+        Raw output from ``ls -l`` run inside an SFTP session.
 
     Returns
     -------
     dict[str, int]
         Mapping of filename to file size in bytes.
 
-    Examples
-    --------
-    >>> parse_ls_output("-rw-r--r-- 1 user group 1234 Jan  1 12:00 file.txt\\n")
-    {'file.txt': 1234}
+    Note
+    ----
+    Leading whitespace in filenames is not distinguishable from the
+    column-separator whitespace in ``ls -l`` output.  Filenames with
+    leading spaces will have those spaces stripped.
     """
     result: dict[str, int] = {}
     for line in ls_output.strip().splitlines():
         line = line.strip()
         if not line:
             continue
-        # ls -l format: permissions links owner group size month day time/year name
-        # Note: sftp may use '?' instead of a digit for the link count
         match = re.match(
-            r"^-[-rwx]{9}\s+\S+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+(.+)$",
+            r"^-[-rwxsStT]{9}[.+@]?\s+\S+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+(.+)$",
             line,
         )
         if match:
             size = int(match.group(1))
-            name = match.group(2).strip()
-            result[name] = size
+            name = match.group(2).rstrip()
+            if validate_filename(name):
+                result[name] = size
     return result
 
 
@@ -339,11 +292,9 @@ def get_remote_file_sizes(
     host: str,
     remote_dir: str,
     timeout: int = 10,
+    port: int = 22,
 ) -> dict[str, int]:
-    """Retrieve filename → size mapping from a remote directory via SFTP.
-
-    Connects to *host* and runs ``ls -l`` in *remote_dir* to enumerate
-    remote files and their sizes.
+    """Retrieve filename -> size mapping from a remote directory via SFTP.
 
     Parameters
     ----------
@@ -353,14 +304,20 @@ def get_remote_file_sizes(
         Path to the remote directory to list.
     timeout:
         Connection timeout in seconds.
+    port:
+        Remote port number.
 
     Returns
     -------
     dict[str, int]
         Mapping of filename to file size in bytes.  Empty dict on failure.
     """
-    batch_commands: str = f'cd "{remote_dir}"\nls -l\nbye'
-    success, output = run_sftp(host, batch_commands, timeout=timeout)
+    validate_host(host)
+    validate_port(port)
+    validate_remote_dir(remote_dir)
+
+    batch_commands: str = f'cd "{sftp_escape(remote_dir)}"\nls -l\nbye'
+    success, output = run_sftp(host, batch_commands, timeout=timeout, port=port)
     if not success:
         return {}
     return parse_ls_output(output)
@@ -376,25 +333,16 @@ def filter_existing_files(
     A file **needs** uploading when it either does not exist on the remote,
     or when its local size differs from the remote size.
 
-    Parameters
-    ----------
-    local_dir:
-        Local directory containing the files.
-    local_files:
-        List of filenames (not full paths) to check.
-    remote_sizes:
-        Mapping of remote filename → size in bytes (as returned by
-        :func:`get_remote_file_sizes`).
+    Note
+    ----
+    This function is not used by the CLI, which implements its own
+    skip-existing logic inline.  It is kept as a public API for
+    programmatic use.
 
-    Returns
-    -------
-    list[str]
-        Subset of *local_files* that must be uploaded.
-
-    Examples
-    --------
-    >>> filter_existing_files("/tmp", ["a.txt", "b.txt"], {"a.txt": 100})
-    ['b.txt']
+    Note
+    ----
+    There is a TOCTOU race condition: a file's size may change between
+    the check performed here and the subsequent upload attempt.
     """
     need_upload: list[str] = []
     for filename in local_files:

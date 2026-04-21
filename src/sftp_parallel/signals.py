@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from types import FrameType
 from typing import Any, Callable
 
@@ -16,18 +17,24 @@ console = Console()
 _original_sigint: Any = None
 _original_sigterm: Any = None
 
+_SIGTERM_WAIT_SECONDS = 2
+_handling_signal = False
+
 
 def _make_signal_handler(
-    popens: list,
+    popens: list[tuple[subprocess.Popen[str], int]],
+    popen_lock: threading.Lock,
 ) -> Callable[[int, FrameType | None], None]:
     """Create a signal handler that terminates all child Popen processes.
 
     Parameters
     ----------
     popens:
-        List of ``subprocess.Popen`` objects.  Each is expected to have
-        been started with ``start_new_session=True`` so that
-        ``os.killpg`` can kill the entire process group.
+        List of ``(Popen, pgid)`` tuples.  Each process is expected to have
+        been started with ``start_new_session=True`` so that ``os.killpg``
+        can kill the entire process group.
+    popen_lock:
+        A threading lock protecting *popens* from concurrent modification.
 
     Returns
     -------
@@ -36,42 +43,61 @@ def _make_signal_handler(
     """
 
     def handler(signum: int, frame: FrameType | None) -> None:
-        for proc in popens:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
+        global _handling_signal
+        if _handling_signal:
+            return
+        _handling_signal = True
 
-        # SIGTERM → brief wait → SIGKILL for stubborn processes
-        for proc in popens:
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+        locked = popen_lock.acquire(blocking=False)
+        try:
+            snapshot = list(popens)
+        finally:
+            if locked:
+                popen_lock.release()
+
+        for _proc, pgid in snapshot:
+            if pgid > 1:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGTERM)
                 except (ProcessLookupError, OSError):
                     pass
 
+        for proc, pgid in snapshot:
+            try:
+                proc.wait(timeout=_SIGTERM_WAIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                if pgid > 1:
+                    try:
+                        os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+
         console.print("[bold red]Interrupted[/bold red]")
+        _handling_signal = False
         sys.exit(128 + signum)
 
     return handler
 
 
-def setup_signal_handlers(popens: list) -> None:
+def setup_signal_handlers(
+    popens: list[tuple[subprocess.Popen[str], int]],
+    popen_lock: threading.Lock,
+) -> None:
     """Register SIGINT and SIGTERM handlers that terminate child processes.
 
     Parameters
     ----------
     popens:
-        List of ``subprocess.Popen`` objects for running SFTP processes.
+        List of ``(Popen, pgid)`` tuples for running SFTP processes.
+    popen_lock:
+        A threading lock protecting *popens*.
     """
     global _original_sigint, _original_sigterm
 
     _original_sigint = signal.getsignal(signal.SIGINT)
     _original_sigterm = signal.getsignal(signal.SIGTERM)
 
-    handler = _make_signal_handler(popens)
+    handler = _make_signal_handler(popens, popen_lock)
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
 

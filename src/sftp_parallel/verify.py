@@ -1,51 +1,48 @@
-"""Verification module – checksum comparison for uploaded files."""
+"""Remote file verification via checksums."""
 
 from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shlex
 import subprocess
 
+from sftp_parallel.batch import (
+    validate_filename,
+    validate_host,
+    validate_port,
+    validate_remote_dir,
+)
 
-def compute_local_checksum(local_path: str, algorithm: str = "sha256") -> str:
+_MIN_TRANSFER_RATE = 256 * 1024
+_CHECKSUM_CONNECTION_OVERHEAD = 10
+
+
+def compute_local_checksum(filepath: str, algorithm: str = "sha256") -> str:
     """Compute the checksum of a local file.
 
     Parameters
     ----------
-    local_path:
-        Absolute or relative path to the local file.
+    filepath:
+        Path to the local file.
     algorithm:
-        Hash algorithm name recognised by :func:`hashlib.new`
-        (default ``"sha256"``).
+        Hash algorithm name (e.g. ``"sha256"``, ``"md5"``).
 
     Returns
     -------
     str
-        Hex-encoded digest of the file contents.
-
-    Raises
-    ------
-    FileNotFoundError
-        If *local_path* does not exist.
+        Hex digest of the file's content.
     """
     h = hashlib.new(algorithm)
-    with open(local_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
+    with open(filepath, "rb") as f:
+        while chunk := f.read(65536):
             h.update(chunk)
     return h.hexdigest()
 
 
 def parse_checksum_output(output: str) -> dict[str, str]:
-    """Parse output from ``sha256sum`` (or similar) into a filename → hash mapping.
-
-    Each line of *output* is expected to be in the format::
-
-        {hash}  {filepath}
-
-    (two spaces between hash and path).  The filename key in the returned
-    dict is the **basename** of *filepath*, making it easy to compare with
-    local filenames.
+    """Parse ``sha256sum``-style output into a basename -> digest mapping.
 
     Parameters
     ----------
@@ -55,7 +52,7 @@ def parse_checksum_output(output: str) -> dict[str, str]:
     Returns
     -------
     dict[str, str]
-        Mapping of basename → hex digest.  Lines that cannot be parsed are
+        Mapping of basename to hex digest.  Lines that cannot be parsed are
         silently skipped.
     """
     result: dict[str, str] = {}
@@ -63,17 +60,13 @@ def parse_checksum_output(output: str) -> dict[str, str]:
         line = line.strip()
         if not line:
             continue
-        # sha256sum format: "{hash}  {path}" (two spaces, text mode)
-        # or: "{hash} *{path}" (space + asterisk, binary mode)
-        # Try text mode first (two spaces), then binary mode (space + asterisk)
         parts = line.split("  ", 1)
         if len(parts) != 2:
-            # Try binary mode: "{hash} *{path}"
             parts = line.split(" *", 1)
             if len(parts) != 2:
                 continue
         checksum, filepath = parts
-        filename = os.path.basename(filepath.strip())
+        filename = os.path.basename(filepath.rstrip())
         result[filename] = checksum.strip()
     return result
 
@@ -84,11 +77,12 @@ def compute_remote_checksums(
     filenames: list[str],
     algorithm: str = "sha256",
     timeout: int = 10,
+    port: int = 22,
 ) -> dict[str, str]:
     """Compute checksums of remote files via SSH.
 
     Connects to *host* and runs ``{algorithm}sum`` in *remote_dir* for the
-    given *filenames*, returning a mapping of filename → hex digest.
+    given *filenames*.
 
     Parameters
     ----------
@@ -97,21 +91,51 @@ def compute_remote_checksums(
     remote_dir:
         Path to the remote directory containing the files.
     filenames:
-        List of filenames (basenames only) to checksum on the remote.
+        List of basenames to checksum on the remote.
     algorithm:
-        Hash algorithm (default ``"sha256"``).  The corresponding
-        ``{algorithm}sum`` binary must exist on the remote server.
+        Hash algorithm (default ``"sha256"``).
     timeout:
-        SSH connection timeout in seconds.
+        Connection timeout in seconds.
+    port:
+        Remote port number.
 
     Returns
     -------
     dict[str, str]
-        Mapping of filename → hex digest.  Returns an empty dict on
-        connection failure or other errors.
+        Mapping of basename -> hex digest.  Partial results are returned
+        even if some files could not be hashed.  Returns an empty dict
+        if the SSH connection fails entirely.
+
+    Raises
+    ------
+    ValueError
+        If *host*, *remote_dir*, or *port* is invalid, or if *algorithm*
+        contains disallowed characters.
+
+    Note
+    ----
+    There is no check for ``ARG_MAX`` — if *filenames* is very large,
+    the constructed shell command may exceed the remote system's
+    ``ARG_MAX`` limit, causing the ``ssh`` invocation to fail with
+    ``E2BIG``.  In practice this is extremely unlikely for typical usage
+    (hundreds of files), but is a theoretical limit.
     """
+    validate_host(host)
+    validate_remote_dir(remote_dir)
+    validate_port(port)
+
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", algorithm):
+        raise ValueError(
+            f"invalid algorithm '{algorithm}': "
+            "must contain only letters, digits, hyphens, or underscores"
+        )
+
     if not filenames:
         return {}
+
+    for fn in filenames:
+        if not validate_filename(fn):
+            raise ValueError(f"invalid remote filename: {fn!r}")
 
     sum_cmd = f"{algorithm}sum"
     files_str = " ".join(shlex.quote(f) for f in filenames)
@@ -123,25 +147,25 @@ def compute_remote_checksums(
         f"ConnectTimeout={timeout}",
         "-o",
         "BatchMode=yes",
+        "-o",
+        f"Port={port}",
         host,
         remote_cmd,
     ]
+
+    dynamic_timeout = max(
+        timeout * 3,
+        int(len(filenames) * 32768 / _MIN_TRANSFER_RATE) + _CHECKSUM_CONNECTION_OVERHEAD,
+    )
 
     try:
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=timeout * 3,
+            timeout=dynamic_timeout,
         )
-    except FileNotFoundError:
-        return {}
-    except subprocess.TimeoutExpired:
-        return {}
-    except OSError:
-        return {}
-
-    if result.returncode != 0:
+    except (subprocess.TimeoutExpired, OSError):
         return {}
 
     return parse_checksum_output(result.stdout)
@@ -154,43 +178,43 @@ def verify_uploads(
     local_files: list[str],
     algorithm: str = "sha256",
     timeout: int = 10,
+    port: int = 22,
 ) -> tuple[list[str], list[str]]:
     """Compare local and remote checksums for uploaded files.
 
-    For each file in *local_files*, computes the local checksum and the
-    remote checksum (via SSH), then categorises files as *matched* or
-    *mismatched*.
+    Note
+    ----
+    This function is not used by the CLI, which implements its own
+    verification logic inline.  It is kept as a public API for
+    programmatic use.
 
     Parameters
     ----------
     host:
-        Remote host specification (e.g. ``user@host``).
+        Remote host specification.
     remote_dir:
         Path to the remote directory where files were uploaded.
     local_dir:
-        Path to the local directory containing the original files.
+        Local directory containing the original files.
     local_files:
-        List of filenames (basenames) that were uploaded.
+        List of basenames to verify.
     algorithm:
         Hash algorithm (default ``"sha256"``).
     timeout:
-        SSH connection timeout in seconds.
+        Connection timeout in seconds.
+    port:
+        Remote port number.
 
     Returns
     -------
     tuple[list[str], list[str]]
-        ``(matched, mismatched)`` where *matched* lists filenames whose
-        checksums agree and *mismatched* lists filenames that differ.
-        Files whose remote checksum could not be obtained are treated as
-        *mismatched*.
+        ``(matched, mismatched)`` — two lists of filenames.
     """
     remote_checksums = compute_remote_checksums(
-        host, remote_dir, local_files, algorithm=algorithm, timeout=timeout
+        host, remote_dir, local_files, algorithm=algorithm, timeout=timeout, port=port
     )
-
     matched: list[str] = []
     mismatched: list[str] = []
-
     for filename in local_files:
         local_path = os.path.join(local_dir, filename)
         try:
@@ -198,11 +222,9 @@ def verify_uploads(
         except OSError:
             mismatched.append(filename)
             continue
-
         remote_hash = remote_checksums.get(filename)
         if remote_hash is not None and remote_hash == local_hash:
             matched.append(filename)
         else:
             mismatched.append(filename)
-
     return matched, mismatched

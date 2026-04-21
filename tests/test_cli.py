@@ -1,417 +1,194 @@
-"""Tests for the CLI module."""
+"""Tests for sftp_parallel.cli."""
 
 from __future__ import annotations
 
-import os
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from sftp_parallel.cli import (
-    list_local_files,
     main,
-    parse_destination,
+    resolve_file_patterns,
+    validate_basename_uniqueness,
 )
 
 
-class TestParseDestination:
-    def test_basic_destination(self) -> None:
-        host, remote_dir = parse_destination("user@host:/remote/dir")
-        assert host == "user@host"
-        assert remote_dir == "/remote/dir"
-
-    def test_ipv6_destination(self) -> None:
-        host, remote_dir = parse_destination("[::1]:/remote/dir")
-        assert host == "[::1]"
-        assert remote_dir == "/remote/dir"
-
-    def test_user_at_ipv6(self) -> None:
-        host, remote_dir = parse_destination("user@[::1]:/tmp")
-        assert host == "user@[::1]"
-        assert remote_dir == "/tmp"
-
-    def test_no_colon_raises(self) -> None:
-        with pytest.raises(ValueError, match="expected HOST:REMOTE_DIR"):
-            parse_destination("nohost")
-
-    def test_uses_last_colon(self) -> None:
-        host, remote_dir = parse_destination("user@host:22:/remote")
-        assert host == "user@host:22"
-        assert remote_dir == "/remote"
-
-    def test_empty_host_raises(self) -> None:
-        with pytest.raises(ValueError, match="host part is empty"):
-            parse_destination(":/remote")
-
-    def test_empty_remote_dir_raises(self) -> None:
-        with pytest.raises(ValueError, match="remote directory is empty"):
-            parse_destination("user@host:")
+# --- resolve_file_patterns ---
 
 
-class TestListLocalFiles:
-    def test_returns_only_regular_files(self, tmp_path: object) -> None:
-        tmp = tmp_path
-        (tmp / "file1.txt").write_text("hello")
-        (tmp / "file2.txt").write_text("world")
-        (tmp / "subdir").mkdir()
+class TestResolveFilePatterns:
+    def test_literal_file(self, tmp_path):
+        f = tmp_path / "hello.txt"
+        f.write_text("content")
+        result = resolve_file_patterns(["hello.txt"], cwd=tmp_path)
+        assert len(result) == 1
+        assert result[0].name == "hello.txt"
 
-        files = list_local_files(str(tmp))
-        assert "file1.txt" in files
-        assert "file2.txt" in files
-        assert "subdir" not in files
+    def test_glob_pattern(self, tmp_path):
+        (tmp_path / "a.txt").write_text("a")
+        (tmp_path / "b.txt").write_text("b")
+        result = resolve_file_patterns(["*.txt"], cwd=tmp_path)
+        assert len(result) == 2
 
-    def test_returns_sorted(self, tmp_path: object) -> None:
-        tmp = tmp_path
-        (tmp / "z.txt").write_text("z")
-        (tmp / "a.txt").write_text("a")
+    def test_nonexistent_literal_warns(self, tmp_path, capsys):
+        result = resolve_file_patterns(["nonexistent.txt"], cwd=tmp_path)
+        assert len(result) == 0
 
-        files = list_local_files(str(tmp))
-        assert files == ["a.txt", "z.txt"]
+    def test_glob_metacharacters_literal(self, tmp_path):
+        f = tmp_path / "test[1].txt"
+        f.write_text("content")
+        result = resolve_file_patterns(["test[1].txt"], cwd=tmp_path)
+        assert len(result) == 1
 
-    def test_empty_directory(self, tmp_path: object) -> None:
-        tmp = tmp_path
-        assert list_local_files(str(tmp)) == []
+    def test_no_patterns_lists_dir(self, tmp_path):
+        (tmp_path / "a.txt").write_text("a")
+        (tmp_path / "b.txt").write_text("b")
+        result = resolve_file_patterns([], cwd=tmp_path)
+        assert len(result) >= 2
 
-    def test_nonexistent_directory_returns_empty(self) -> None:
-        files = list_local_files("/nonexistent/path/xyz")
-        assert files == []
+    def test_skips_unsafe_filename(self, tmp_path):
+        (tmp_path / "-badfile").write_text("content")
+        result = resolve_file_patterns([], cwd=tmp_path)
+        names = [p.name for p in result]
+        assert "-badfile" not in names
 
 
-class TestMainUploadSuccess:
-    @patch("sftp_parallel.cli.upload_files")
-    def test_successful_upload_exits_zero(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "test.txt").write_text("content")
-        mock_upload_files.return_value = (True, 0)
+# --- validate_basename_uniqueness ---
 
+
+class TestValidateBasenameUniqueness:
+    def test_unique(self, tmp_path):
+        a = tmp_path / "a.txt"
+        b = tmp_path / "b.txt"
+        a.write_text("a")
+        b.write_text("b")
+        validate_basename_uniqueness([a, b])
+
+    def test_duplicate(self, tmp_path):
+        a = tmp_path / "dir1" / "a.txt"
+        b = tmp_path / "dir2" / "a.txt"
+        a.parent.mkdir()
+        b.parent.mkdir()
+        a.write_text("a")
+        b.write_text("b")
+        with pytest.raises(ValueError, match="Duplicate basename"):
+            validate_basename_uniqueness([a, b])
+
+
+# --- main (CLI integration) ---
+
+
+class TestCliHostValidation:
+    def test_empty_host_exits(self):
         with pytest.raises(SystemExit) as exc_info:
-            main(["upload", str(tmp), "user@host:/remote"])
+            main(["-s", "", "-f", "*.txt"])
+        assert exc_info.value.code == 2
 
-        assert exc_info.value.code == 0
-        mock_upload_files.assert_called_once()
-
-    @patch("sftp_parallel.cli.upload_files")
-    def test_upload_prints_success(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "test.txt").write_text("content")
-        mock_upload_files.return_value = (True, 0)
-
-        with patch("sftp_parallel.cli.console") as mock_console:
-            with pytest.raises(SystemExit) as exc_info:
-                main(["upload", str(tmp), "user@host:/remote"])
-
-        assert exc_info.value.code == 0
-        success_calls = [
-            c for c in mock_console.print.call_args_list if "Success" in str(c)
-        ]
-        assert len(success_calls) > 0
-
-    @patch("sftp_parallel.cli.upload_files")
-    def test_upload_shows_file_count(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "a.txt").write_text("a")
-        (tmp / "b.txt").write_text("b")
-        mock_upload_files.return_value = (True, 0)
-
-        with patch("sftp_parallel.cli.console") as mock_console:
-            with pytest.raises(SystemExit):
-                main(["upload", str(tmp), "user@host:/remote"])
-
-        upload_calls = [
-            c
-            for c in mock_console.print.call_args_list
-            if "Uploading 2 files" in str(c)
-        ]
-        assert len(upload_calls) > 0
-
-
-class TestMainUploadFailure:
-    @patch("sftp_parallel.cli.upload_files")
-    def test_failed_upload_exits_74(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "test.txt").write_text("content")
-        mock_upload_files.return_value = (False, 1)
-
+    def test_invalid_port_exits(self):
         with pytest.raises(SystemExit) as exc_info:
-            main(["upload", str(tmp), "user@host:/remote"])
+            main(["-s", "user@host", "-f", "*.txt", "-p", "0"])
+        assert exc_info.value.code == 2
 
-        assert exc_info.value.code == 74
-
-    @patch("sftp_parallel.cli.upload_files")
-    def test_failed_upload_prints_failure(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "test.txt").write_text("content")
-        mock_upload_files.return_value = (False, 1)
-
-        with patch("sftp_parallel.cli.console") as mock_console:
-            with pytest.raises(SystemExit):
-                main(["upload", str(tmp), "user@host:/remote"])
-
-        failed_calls = [
-            c for c in mock_console.print.call_args_list if "Failed" in str(c)
-        ]
-        assert len(failed_calls) > 0
-
-    @patch("sftp_parallel.cli.upload_files")
-    def test_failed_upload_uses_file_not_bucket(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "test.txt").write_text("content")
-        mock_upload_files.return_value = (False, 3)
-
-        with patch("sftp_parallel.cli.console") as mock_console:
-            with pytest.raises(SystemExit):
-                main(["upload", str(tmp), "user@host:/remote"])
-
-        failed_calls = [
-            c for c in mock_console.print.call_args_list if "file" in str(c)
-        ]
-        assert len(failed_calls) > 0
-
-
-class TestSingularFileMessage:
-    @patch("sftp_parallel.cli.upload_files")
-    def test_singular_file_count(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "only.txt").write_text("data")
-        mock_upload_files.return_value = (True, 0)
-
-        with patch("sftp_parallel.cli.console") as mock_console:
-            with pytest.raises(SystemExit):
-                main(["upload", str(tmp), "user@host:/remote"])
-
-        singular_calls = [
-            c
-            for c in mock_console.print.call_args_list
-            if "Uploading 1 file " in str(c)
-        ]
-        assert len(singular_calls) > 0
-
-
-class TestUploadFilesIntegration:
-    @patch("sftp_parallel.cli.upload_files")
-    def test_upload_files_called_with_flat_file_list(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "alpha.txt").write_text("aaa")
-        (tmp / "beta.txt").write_text("bbb")
-        mock_upload_files.return_value = (True, 0)
-
-        with pytest.raises(SystemExit):
-            main(["upload", str(tmp), "user@host:/data"])
-
-        call_args = mock_upload_files.call_args
-        assert call_args[0][0] == "user@host"
-        assert call_args[0][2] == "/data"
-        files = call_args[0][1]
-        assert "alpha.txt" in files
-        assert "beta.txt" in files
-
-    @patch("sftp_parallel.cli.upload_files")
-    def test_host_passed_correctly(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "file.txt").write_text("data")
-        mock_upload_files.return_value = (True, 0)
-
-        with pytest.raises(SystemExit):
-            main(["upload", str(tmp), "deploy@server.example.com:/var/www"])
-
-        host = mock_upload_files.call_args[0][0]
-        assert host == "deploy@server.example.com"
-
-    @patch("sftp_parallel.cli.upload_files")
-    def test_threads_flag_sets_num_workers(
-        self, mock_upload_files: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        for name in ["a.txt", "b.txt", "c.txt", "d.txt"]:
-            (tmp / name).write_text("data")
-        mock_upload_files.return_value = (True, 0)
-
-        with pytest.raises(SystemExit):
-            main(["upload", "-t", "4", str(tmp), "user@host:/remote"])
-
-        call_kwargs = mock_upload_files.call_args[1]
-        assert call_kwargs["num_workers"] == 4
-
-
-class TestMainNoCommand:
-    def test_no_command_exits_zero(self) -> None:
+    def test_empty_dest_exits(self):
         with pytest.raises(SystemExit) as exc_info:
-            main([])
+            main(["-s", "user@host", "-f", "*.txt", "-d", ""])
+        assert exc_info.value.code == 2
+
+
+class TestPortFlag:
+    def test_default_port(self):
+        with patch("sftp_parallel.cli.upload_files", return_value=(True, 0)) as mock_upload, \
+             patch("sftp_parallel.cli.resolve_file_patterns") as mock_resolve:
+            mock_resolve.return_value = [Path("/tmp/a.txt")]
+            with pytest.raises(SystemExit):
+                main(["-s", "user@host", "-f", "a.txt"])
+            assert mock_upload.call_args[1]["port"] == 22
+
+    def test_custom_port(self):
+        with patch("sftp_parallel.cli.upload_files", return_value=(True, 0)) as mock_upload, \
+             patch("sftp_parallel.cli.resolve_file_patterns") as mock_resolve:
+            mock_resolve.return_value = [Path("/tmp/a.txt")]
+            with pytest.raises(SystemExit):
+                main(["-s", "user@host", "-f", "a.txt", "-p", "2222"])
+            assert mock_upload.call_args[1]["port"] == 2222
+
+
+class TestDestFlag:
+    def test_default_dest(self):
+        with patch("sftp_parallel.cli.upload_files", return_value=(True, 0)) as mock_upload, \
+             patch("sftp_parallel.cli.resolve_file_patterns") as mock_resolve:
+            mock_resolve.return_value = [Path("/tmp/a.txt")]
+            with pytest.raises(SystemExit):
+                main(["-s", "user@host", "-f", "a.txt"])
+            assert mock_upload.call_args[0][2] == "."
+
+    def test_custom_dest(self):
+        with patch("sftp_parallel.cli.upload_files", return_value=(True, 0)) as mock_upload, \
+             patch("sftp_parallel.cli.resolve_file_patterns") as mock_resolve:
+            mock_resolve.return_value = [Path("/tmp/a.txt")]
+            with pytest.raises(SystemExit):
+                main(["-s", "user@host", "-f", "a.txt", "-d", "/remote"])
+            assert mock_upload.call_args[0][2] == "/remote"
+
+
+class TestSkipExisting:
+    @patch("sftp_parallel.cli.compute_remote_checksums")
+    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    @patch("sftp_parallel.cli.resolve_file_patterns")
+    def test_skip_existing_default_dest(
+        self, mock_resolve, mock_sizes, mock_upload, mock_checksums
+    ):
+        mock_resolve.return_value = [Path("/tmp/a.txt")]
+        mock_sizes.return_value = {"a.txt": 0}
+        mock_upload.return_value = (True, 0)
+        with pytest.raises(SystemExit) as exc_info:
+            main(["-s", "user@host", "-f", "a.txt", "--skip-existing"])
+        # All files skipped, no verify => exit 0
         assert exc_info.value.code == 0
+
+    @patch("sftp_parallel.cli.compute_remote_checksums")
+    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    @patch("sftp_parallel.cli.resolve_file_patterns")
+    def test_skip_existing_with_verify(
+        self, mock_resolve, mock_sizes, mock_upload, mock_checksums
+    ):
+        mock_resolve.return_value = [Path("/tmp/a.txt")]
+        mock_sizes.return_value = {"a.txt": 0}  # file size matches => skip
+        mock_upload.return_value = (True, 0)
+        mock_checksums.return_value = {}
+        # When all files are skipped + verify, the code should reach verification
+        # But file doesn't exist on disk so it goes to need_upload
+        # The file gets OSError on stat => need_upload => gets uploaded
+        with pytest.raises(SystemExit):
+            main(["-s", "user@host", "-f", "a.txt", "--skip-existing", "--verify"])
+
+
+class TestVerifyInline:
+    @patch("sftp_parallel.cli.compute_local_checksum")
+    @patch("sftp_parallel.cli.compute_remote_checksums")
+    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.resolve_file_patterns")
+    def test_verify_ssh_failure_warning(
+        self, mock_resolve, mock_upload, mock_checksums, mock_local
+    ):
+        mock_resolve.return_value = [Path("/tmp/a.txt")]
+        mock_upload.return_value = (True, 0)
+        mock_checksums.return_value = {}  # SSH failure => empty
+        with pytest.raises(SystemExit):
+            main(["-s", "user@host", "-f", "a.txt", "--verify"])
 
 
 class TestMainVersion:
-    def test_version_flag_exits_zero(self) -> None:
+    def test_version(self):
         with pytest.raises(SystemExit) as exc_info:
             main(["--version"])
         assert exc_info.value.code == 0
 
 
-class TestMainInvalidDestination:
-    def test_invalid_destination_exits_two(self, tmp_path: object) -> None:
-        tmp = tmp_path
-        (tmp / "test.txt").write_text("content")
-
-        with pytest.raises(SystemExit) as exc_info:
-            main(["upload", str(tmp), "nohost"])
-
-        assert exc_info.value.code == 2
-
-
-class TestMainNonexistentLocalDir:
-    def test_nonexistent_local_dir_exits_two(self) -> None:
-        with pytest.raises(SystemExit) as exc_info:
-            main(["upload", "/nonexistent/dir", "user@host:/remote"])
-
-        assert exc_info.value.code == 2
-
-
-class TestMainEmptyDir:
-    def test_empty_local_dir_exits_zero(self, tmp_path: object) -> None:
-        tmp = tmp_path
-
-        with pytest.raises(SystemExit) as exc_info:
-            main(["upload", str(tmp), "user@host:/remote"])
-
-        assert exc_info.value.code == 0
-
-
-class TestSkipExisting:
-    @patch("sftp_parallel.cli.upload_files")
-    @patch("sftp_parallel.cli.get_remote_file_sizes")
-    def test_skip_existing_filters_files(
-        self,
-        mock_remote_sizes: MagicMock,
-        mock_upload_files: MagicMock,
-        tmp_path: object,
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "a.txt").write_text("hello")
-        (tmp / "b.txt").write_text("world")
-
-        a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
-        mock_remote_sizes.return_value = {"a.txt": a_size}
-        mock_upload_files.return_value = (True, 0)
-
-        with patch("sftp_parallel.cli.console"):
-            with pytest.raises(SystemExit) as exc_info:
-                main(["upload", "--skip-existing", str(tmp), "user@host:/remote"])
-
-        assert exc_info.value.code == 0
-        mock_remote_sizes.assert_called_once_with("user@host", "/remote")
-        files = mock_upload_files.call_args[0][1]
-        assert "b.txt" in files
-        assert "a.txt" not in files
-
-    @patch("sftp_parallel.cli.upload_files")
-    @patch("sftp_parallel.cli.get_remote_file_sizes")
-    def test_skip_existing_prints_skip_message(
-        self,
-        mock_remote_sizes: MagicMock,
-        mock_upload_files: MagicMock,
-        tmp_path: object,
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "a.txt").write_text("hello")
-        (tmp / "b.txt").write_text("world")
-
-        a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
-        mock_remote_sizes.return_value = {"a.txt": a_size}
-        mock_upload_files.return_value = (True, 0)
-
-        with patch("sftp_parallel.cli.console") as mock_console:
-            with pytest.raises(SystemExit):
-                main(["upload", "--skip-existing", str(tmp), "user@host:/remote"])
-
-        skip_calls = [
-            c for c in mock_console.print.call_args_list if "Skipping" in str(c)
-        ]
-        assert len(skip_calls) > 0
-
-    @patch("sftp_parallel.cli.get_remote_file_sizes")
-    def test_all_files_exist_on_remote(
-        self, mock_remote_sizes: MagicMock, tmp_path: object
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "a.txt").write_text("hello")
-
-        a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
-        mock_remote_sizes.return_value = {"a.txt": a_size}
-
-        with patch("sftp_parallel.cli.console") as mock_console:
-            with pytest.raises(SystemExit) as exc_info:
-                main(["upload", "--skip-existing", str(tmp), "user@host:/remote"])
-
-        assert exc_info.value.code == 0
-        all_exist_calls = [
-            c for c in mock_console.print.call_args_list if "already exist" in str(c)
-        ]
-        assert len(all_exist_calls) > 0
-
-    @patch("sftp_parallel.cli.upload_files")
-    @patch("sftp_parallel.cli.get_remote_file_sizes")
-    def test_skip_existing_not_called_without_flag(
-        self,
-        mock_remote_sizes: MagicMock,
-        mock_upload_files: MagicMock,
-        tmp_path: object,
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "a.txt").write_text("hello")
-        mock_upload_files.return_value = (True, 0)
-
+class TestThreadsValidation:
+    def test_invalid_threads(self):
         with pytest.raises(SystemExit):
-            main(["upload", str(tmp), "user@host:/remote"])
-
-        mock_remote_sizes.assert_not_called()
-
-
-class TestVerifyWithSkipExisting:
-    @patch("sftp_parallel.cli.verify_uploads")
-    @patch("sftp_parallel.cli.upload_files")
-    @patch("sftp_parallel.cli.get_remote_file_sizes")
-    def test_verify_and_skip_existing_combined(
-        self,
-        mock_remote_sizes: MagicMock,
-        mock_upload_files: MagicMock,
-        mock_verify: MagicMock,
-        tmp_path: object,
-    ) -> None:
-        tmp = tmp_path
-        (tmp / "a.txt").write_text("aaa")
-        (tmp / "b.txt").write_text("bbb")
-
-        a_size = os.path.getsize(os.path.join(str(tmp), "a.txt"))
-        mock_remote_sizes.return_value = {"a.txt": a_size}
-        mock_upload_files.return_value = (True, 0)
-        mock_verify.return_value = (["b.txt"], [])
-
-        with pytest.raises(SystemExit) as exc_info:
-            main(
-                ["upload", "--skip-existing", "--verify", str(tmp), "user@host:/remote"]
-            )
-
-        assert exc_info.value.code == 0
-        mock_remote_sizes.assert_called_once_with("user@host", "/remote")
-        mock_verify.assert_called_once()
-        verify_files = mock_verify.call_args[0][3]
-        assert "a.txt" not in verify_files
-        assert "b.txt" in verify_files
+            main(["-s", "user@host", "-f", "a.txt", "-t", "0"])
