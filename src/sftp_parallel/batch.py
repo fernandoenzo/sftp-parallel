@@ -8,6 +8,8 @@ import warnings
 
 _MAX_FILENAME_LENGTH = 255
 DEFAULT_TIMEOUT = 10
+MIN_TRANSFER_RATE = 256 * 1024
+CONNECTION_OVERHEAD = 10
 
 
 def validate_host(host: str) -> None:
@@ -139,14 +141,14 @@ def sftp_escape(path: str) -> str:
 
 
 def _validate_sftp_path(path: str, label: str = "path") -> None:
-    """Validate a path is safe for SFTP batch commands (no newlines).
+    """Validate a path is safe for SFTP batch commands (no newlines or NUL).
 
-    Raises ``ValueError`` if the path contains newline or carriage return
+    Raises ``ValueError`` if the path contains NUL, newline, or carriage return
     characters, which would break the line-oriented SFTP batch protocol.
     """
-    if "\n" in path or "\r" in path:
+    if "\n" in path or "\r" in path or "\0" in path:
         raise ValueError(
-            f"{label} contains newline characters, "
+            f"{label} contains newline or NUL characters, "
             "which would break SFTP batch commands: "
             f"{path!r}"
         )

@@ -64,7 +64,7 @@ class TestParseChecksumOutput:
 class TestComputeRemoteChecksums:
     def test_empty_filenames(self):
         result = compute_remote_checksums("user@host", "/remote", [])
-        assert result == {}
+        assert result is None
 
     def test_invalid_host(self):
         with pytest.raises(ValueError):
@@ -95,7 +95,7 @@ class TestComputeRemoteChecksums:
     def test_ssh_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired("ssh", 30)
         result = compute_remote_checksums("user@host", "/remote", ["a.txt"], port=22)
-        assert result == {}
+        assert result is None
 
 
 # --- verify_uploads ---

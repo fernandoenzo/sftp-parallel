@@ -226,6 +226,8 @@ def _handle_upload(args: argparse.Namespace) -> None:
         remote_sizes = get_remote_file_sizes(
             args.server, remote_dir, port=args.port
         )
+        if remote_sizes is None:
+            remote_sizes = {}
         need_upload: list[str] = []
         skipped: list[str] = []
         oserror_count = 0
@@ -293,14 +295,13 @@ def _handle_upload(args: argparse.Namespace) -> None:
         basenames = [os.path.basename(fp) for fp in verify_paths]
         console.print("Upload complete")
         console.print("Verifying checksums...")
-        try:
-            remote_checksums = compute_remote_checksums(
-                args.server,
-                remote_dir,
-                basenames,
-                port=args.port,
-            )
-        except ValueError:
+        remote_checksums = compute_remote_checksums(
+            args.server,
+            remote_dir,
+            basenames,
+            port=args.port,
+        )
+        if remote_checksums is None:
             remote_checksums = {}
         if not remote_checksums and basenames:
             console.print(

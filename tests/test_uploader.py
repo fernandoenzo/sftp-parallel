@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -40,41 +40,23 @@ class TestBuildSftpCmd:
 
 
 class TestCleanupProc:
-    def test_uses_cached_pgid(self):
-        mock_proc = MagicMock(spec=subprocess.Popen)
-        mock_proc.stdin = None
-        mock_proc.stdout = None
-        mock_proc.stderr = None
-        mock_proc.wait.return_value = 0
-
+    def test_uses_cached_pgid(self, mock_popen_for_cleanup):
         with patch("sftp_parallel.uploader.os.killpg") as mock_killpg:
-            _cleanup_proc(mock_proc, pgid=5000)
-            mock_killpg.assert_called_with(5000, 9)  # SIGKILL=9
+            _cleanup_proc(mock_popen_for_cleanup, pgid=5000)
+            mock_killpg.assert_called_with(5000, 9)
 
-    def test_falls_back_to_getpgid(self):
-        mock_proc = MagicMock(spec=subprocess.Popen)
-        mock_proc.pid = 12345
-        mock_proc.stdin = None
-        mock_proc.stdout = None
-        mock_proc.stderr = None
-        mock_proc.wait.return_value = 0
-
+    def test_falls_back_to_getpgid(self, mock_popen_for_cleanup):
+        mock_popen_for_cleanup.pid = 12345
         with patch("sftp_parallel.uploader.os.getpgid", return_value=5000) as mock_getpgid, \
              patch("sftp_parallel.uploader.os.killpg") as mock_killpg:
-            _cleanup_proc(mock_proc, pgid=0)
+            _cleanup_proc(mock_popen_for_cleanup, pgid=0)
             mock_getpgid.assert_called_with(12345)
             mock_killpg.assert_called_with(5000, 9)
 
-    def test_catches_timeout_expired(self):
-        mock_proc = MagicMock(spec=subprocess.Popen)
-        mock_proc.stdin = None
-        mock_proc.stdout = None
-        mock_proc.stderr = None
-        mock_proc.wait.side_effect = subprocess.TimeoutExpired("cmd", 5)
-
-        # Should not raise
+    def test_catches_timeout_expired(self, mock_popen_for_cleanup):
+        mock_popen_for_cleanup.wait.side_effect = subprocess.TimeoutExpired("cmd", 5)
         with patch("sftp_parallel.uploader.os.killpg"):
-            _cleanup_proc(mock_proc, pgid=5000)
+            _cleanup_proc(mock_popen_for_cleanup, pgid=5000)
 
 
 # --- parse_ls_output ---
@@ -145,10 +127,10 @@ class TestGetRemoteFileSizes:
         assert result == {"a.txt": 100}
 
     @patch("sftp_parallel.uploader.run_sftp")
-    def test_failure_returns_empty(self, mock_run):
+    def test_failure_returns_none(self, mock_run):
         mock_run.return_value = (False, "error")
         result = get_remote_file_sizes("user@host", "/remote", port=22)
-        assert result == {}
+        assert result is None
 
     def test_invalid_host(self):
         with pytest.raises(ValueError):

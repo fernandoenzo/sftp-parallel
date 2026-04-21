@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from rich.progress import Progress
 
 from sftp_parallel.progress import advance_progress, create_upload_progress
+from sftp_parallel.uploader import upload_files
 
 
 class TestCreateUploadProgress:
@@ -134,16 +135,8 @@ class TestProgressIntegration:
 
     @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
     @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_progress_callback_advances_per_file(self, mock_popen: MagicMock, mock_getpgid: MagicMock) -> None:
-        """Progress callback advances per file with upload_files."""
-        from sftp_parallel.uploader import upload_files
-
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-        mock_popen.return_value = mock_proc
-
+    def test_progress_callback_advances_per_file(self, mock_popen: MagicMock, mock_getpgid: MagicMock, mock_popen_success: MagicMock) -> None:
+        mock_popen.return_value = mock_popen_success
         files = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]
 
         with create_upload_progress(len(files), "user@host", "/remote") as (
@@ -168,15 +161,9 @@ class TestProgressIntegration:
 
     @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
     @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_failed_file_does_not_advance_progress(self, mock_popen: MagicMock, mock_getpgid: MagicMock) -> None:
-        """Failed file upload does not trigger progress advance."""
-        from sftp_parallel.uploader import upload_files
-
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 1
-        mock_proc.pid = 12345
-        mock_popen.return_value = mock_proc
+    def test_failed_file_does_not_advance_progress(self, mock_popen: MagicMock, mock_getpgid: MagicMock, mock_popen_success: MagicMock) -> None:
+        mock_popen_success.returncode = 1
+        mock_popen.return_value = mock_popen_success
 
         with create_upload_progress(2, "user@host", "/remote") as (progress, task_id):
 
@@ -199,20 +186,17 @@ class TestProgressIntegration:
 
     @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
     @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_mixed_success_and_failure(self, mock_popen: MagicMock, mock_getpgid: MagicMock) -> None:
-        """Only successful uploads advance progress."""
-        from sftp_parallel.uploader import upload_files
-
+    def test_mixed_success_and_failure(self, mock_popen: MagicMock, mock_getpgid: MagicMock, mock_popen_success: MagicMock) -> None:
         call_count = 0
 
         def make_proc():
             nonlocal call_count
             call_count += 1
-            mock_proc = MagicMock()
-            mock_proc.communicate.return_value = ("", "")
-            mock_proc.returncode = 0 if call_count <= 2 else 1
-            mock_proc.pid = 10000 + call_count
-            return mock_proc
+            proc = MagicMock()
+            proc.communicate.return_value = ("", "")
+            proc.returncode = 0 if call_count <= 2 else 1
+            proc.pid = 10000 + call_count
+            return proc
 
         mock_popen.side_effect = [make_proc() for _ in range(4)]
 
@@ -240,21 +224,13 @@ class TestProgressIntegration:
 
     @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
     @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_no_progress_callback_works_normally(self, mock_popen: MagicMock, mock_getpgid: MagicMock) -> None:
-        """Upload works without progress callback."""
-        from sftp_parallel.uploader import upload_files
-
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-        mock_popen.return_value = mock_proc
+    def test_no_progress_callback_works_normally(self, mock_popen: MagicMock, mock_getpgid: MagicMock, mock_popen_success: MagicMock) -> None:
+        mock_popen.return_value = mock_popen_success
 
         all_success, failed_count = upload_files(
             "user@host",
             ["a.txt", "b.txt"],
             "/remote",
-
             num_workers=2,
             port=22,
             progress_callback=None,

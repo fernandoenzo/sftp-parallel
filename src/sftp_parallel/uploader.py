@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import signal
@@ -14,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sftp_parallel.batch import (
     DEFAULT_TIMEOUT,
+    MIN_TRANSFER_RATE,
+    CONNECTION_OVERHEAD,
     build_batch_commands,
     sftp_escape,
     validate_filename,
@@ -25,8 +28,8 @@ from sftp_parallel.signals import cleanup_signal_handlers, setup_signal_handlers
 
 _PROCESS_KILL_WAIT_SECONDS = 5
 _SFTP_TIMEOUT_MULTIPLIER = 3
-_MIN_TRANSFER_RATE = 256 * 1024
-_CONNECTION_OVERHEAD = 10
+
+logger = logging.getLogger(__name__)
 
 
 def _build_sftp_cmd(host: str, timeout: int, port: int = 22) -> list[str]:
@@ -210,14 +213,18 @@ def upload_files(
                 file_size = 0
             transfer_timeout = max(
                 timeout * _SFTP_TIMEOUT_MULTIPLIER,
-                int(file_size / _MIN_TRANSFER_RATE) + _CONNECTION_OVERHEAD,
+                int(file_size / MIN_TRANSFER_RATE) + CONNECTION_OVERHEAD,
             )
             try:
                 proc.communicate(input=batch_cmds, timeout=transfer_timeout)
             except subprocess.TimeoutExpired:
                 _cleanup_proc(proc, pgid)
                 return False
-            except Exception:  # noqa: BLE001
+            except OSError:
+                _cleanup_proc(proc, pgid)
+                return False
+            except Exception:
+                logger.exception("Unexpected error communicating with SFTP process for %s", file_path)
                 _cleanup_proc(proc, pgid)
                 return False
             finally:
@@ -232,8 +239,19 @@ def upload_files(
                 except Exception:  # noqa: BLE001
                     pass
             return True
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):
             if proc is not None:
+                with popen_lock:
+                    if (proc, pgid) in active_popens:
+                        active_popens.remove((proc, pgid))
+                _cleanup_proc(proc, pgid)
+            return False
+        except Exception:
+            logger.exception("Unexpected error uploading %s", file_path)
+            if proc is not None:
+                with popen_lock:
+                    if (proc, pgid) in active_popens:
+                        active_popens.remove((proc, pgid))
                 _cleanup_proc(proc, pgid)
             return False
 
@@ -273,7 +291,7 @@ def parse_ls_output(ls_output: str) -> dict[str, int]:
     """
     result: dict[str, int] = {}
     for line in ls_output.strip().splitlines():
-        line = line.strip()
+        line = line.rstrip()
         if not line:
             continue
         match = re.match(
@@ -293,7 +311,7 @@ def get_remote_file_sizes(
     remote_dir: str,
     timeout: int = 10,
     port: int = 22,
-) -> dict[str, int]:
+) -> dict[str, int] | None:
     """Retrieve filename -> size mapping from a remote directory via SFTP.
 
     Parameters
@@ -309,8 +327,9 @@ def get_remote_file_sizes(
 
     Returns
     -------
-    dict[str, int]
-        Mapping of filename to file size in bytes.  Empty dict on failure.
+    dict[str, int] | None
+        Mapping of filename to file size in bytes.  Returns ``None``
+        on failure (e.g., SFTP connection error).
     """
     validate_host(host)
     validate_port(port)
@@ -319,7 +338,7 @@ def get_remote_file_sizes(
     batch_commands: str = f'cd "{sftp_escape(remote_dir)}"\nls -l\nbye'
     success, output = run_sftp(host, batch_commands, timeout=timeout, port=port)
     if not success:
-        return {}
+        return None
     return parse_ls_output(output)
 
 

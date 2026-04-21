@@ -9,14 +9,13 @@ import shlex
 import subprocess
 
 from sftp_parallel.batch import (
+    MIN_TRANSFER_RATE,
+    CONNECTION_OVERHEAD,
     validate_filename,
     validate_host,
     validate_port,
     validate_remote_dir,
 )
-
-_MIN_TRANSFER_RATE = 256 * 1024
-_CHECKSUM_CONNECTION_OVERHEAD = 10
 
 
 def compute_local_checksum(filepath: str, algorithm: str = "sha256") -> str:
@@ -78,7 +77,7 @@ def compute_remote_checksums(
     algorithm: str = "sha256",
     timeout: int = 10,
     port: int = 22,
-) -> dict[str, str]:
+) -> dict[str, str] | None:
     """Compute checksums of remote files via SSH.
 
     Connects to *host* and runs ``{algorithm}sum`` in *remote_dir* for the
@@ -101,10 +100,10 @@ def compute_remote_checksums(
 
     Returns
     -------
-    dict[str, str]
+    dict[str, str] | None
         Mapping of basename -> hex digest.  Partial results are returned
-        even if some files could not be hashed.  Returns an empty dict
-        if the SSH connection fails entirely.
+        even if some files could not be hashed.  Returns ``None`` if the
+        SSH connection fails entirely.
 
     Raises
     ------
@@ -131,7 +130,7 @@ def compute_remote_checksums(
         )
 
     if not filenames:
-        return {}
+        return None
 
     for fn in filenames:
         if not validate_filename(fn):
@@ -155,7 +154,7 @@ def compute_remote_checksums(
 
     dynamic_timeout = max(
         timeout * 3,
-        int(len(filenames) * 32768 / _MIN_TRANSFER_RATE) + _CHECKSUM_CONNECTION_OVERHEAD,
+        int(len(filenames) * 32768 / MIN_TRANSFER_RATE) + CONNECTION_OVERHEAD,
     )
 
     try:
@@ -166,7 +165,7 @@ def compute_remote_checksums(
             timeout=dynamic_timeout,
         )
     except (subprocess.TimeoutExpired, OSError):
-        return {}
+        return None
 
     return parse_checksum_output(result.stdout)
 
@@ -213,6 +212,8 @@ def verify_uploads(
     remote_checksums = compute_remote_checksums(
         host, remote_dir, local_files, algorithm=algorithm, timeout=timeout, port=port
     )
+    if remote_checksums is None:
+        remote_checksums = {}
     matched: list[str] = []
     mismatched: list[str] = []
     for filename in local_files:

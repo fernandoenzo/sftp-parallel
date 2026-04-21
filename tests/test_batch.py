@@ -192,6 +192,14 @@ class TestBuildBatchCommands:
         with pytest.raises(ValueError, match="contains"):
             build_batch_commands("/remote", ["/tmp/a\nb/f.txt"])
 
+    def test_nul_in_remote_dir_rejected(self):
+        with pytest.raises(ValueError, match="contains"):
+            build_batch_commands("/tmp/a\x00b", ["/local/f.txt"])
+
+    def test_nul_in_file_path_rejected(self):
+        with pytest.raises(ValueError, match="contains"):
+            build_batch_commands("/remote", ["/tmp/a\x00b/f.txt"])
+
     def test_escape_needed(self):
         result = build_batch_commands('/remote "dir"', ['/local/a\\"file'])
         assert '\\"' in result or '\\\\' in result
