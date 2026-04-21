@@ -10,6 +10,7 @@ from sftp_parallel.uploader import (
     upload_files,
     get_remote_file_sizes,
     filter_existing_files,
+    run_sftp,
 )
 from sftp_parallel.verify import (
     verify_uploads,
@@ -24,6 +25,7 @@ __all__ = [
     "upload_files",
     "get_remote_file_sizes",
     "filter_existing_files",
+    "run_sftp",
     "verify_uploads",
     "compute_local_checksum",
     "compute_remote_checksums",

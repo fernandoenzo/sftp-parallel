@@ -75,7 +75,7 @@ class TestCreateUploadProgress:
             task_id,
         ):
             task = progress._tasks[task_id]
-            assert "1 files" in task.description
+            assert "1 file" in task.description
 
 
 class TestAdvanceProgress:

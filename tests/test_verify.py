@@ -34,6 +34,10 @@ class TestComputeLocalChecksum:
         result = compute_local_checksum(str(f))
         assert isinstance(result, str)
 
+    def test_missing_file_raises_oserror(self):
+        with pytest.raises(OSError):
+            compute_local_checksum("/nonexistent/path/file.txt")
+
 
 # --- parse_checksum_output ---
 

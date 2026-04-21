@@ -229,6 +229,65 @@ class TestUploadFiles:
             if os.path.exists(tmp_path + "_2"):
                 os.unlink(tmp_path + "_2")
 
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
+    @patch("sftp_parallel.uploader.os.getpgid", return_value=999)
+    @patch("sftp_parallel.uploader.os.path.getsize", return_value=100)
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_progress_callback_exception_swallowed(self, mock_popen_cls, mock_getsize, mock_getpgid, mock_setup, mock_cleanup):
+        """If progress_callback raises, upload should continue for other files."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        def bad_callback(filename):
+            raise RuntimeError("callback exploded")
+
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("", "")
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+        mock_popen_cls.return_value = mock_proc
+
+        try:
+            success, failed = upload_files(
+                "user@host", [tmp_path], "/remote",
+                num_workers=1, port=22, progress_callback=bad_callback
+            )
+            assert success is True
+            assert failed == 0
+        finally:
+            import os
+            os.unlink(tmp_path)
+
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
+    @patch("sftp_parallel.uploader.os.getpgid", return_value=999)
+    @patch("sftp_parallel.uploader.os.path.getsize")
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_getsize_oserror_continues_upload(self, mock_popen_cls, mock_getsize, mock_getpgid, mock_setup, mock_cleanup):
+        """If os.path.getsize raises OSError, file_size defaults to 0 and upload continues."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        mock_getsize.side_effect = OSError("cannot stat")
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("", "")
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+        mock_popen_cls.return_value = mock_proc
+
+        try:
+            success, failed = upload_files(
+                "user@host", [tmp_path], "/remote", num_workers=1, port=22
+            )
+            assert success is True
+            assert failed == 0
+        finally:
+            import os
+            os.unlink(tmp_path)
+
 
 # --- run_sftp ---
 

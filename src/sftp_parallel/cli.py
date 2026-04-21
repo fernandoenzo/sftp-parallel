@@ -17,7 +17,6 @@ from sftp_parallel.batch import (
     validate_remote_dir,
 )
 from sftp_parallel.progress import advance_progress, create_upload_progress
-from sftp_parallel.signals import cleanup_signal_handlers
 from sftp_parallel.uploader import (
     get_remote_file_sizes,
     upload_files,
@@ -221,7 +220,6 @@ def _handle_upload(args: argparse.Namespace) -> None:
     remote_dir = args.dest
 
     # 7. Skip-existing logic
-    original_file_paths_str = file_paths_str
     if args.skip_existing:
         remote_sizes = get_remote_file_sizes(
             args.server, remote_dir, port=args.port
@@ -287,11 +285,9 @@ def _handle_upload(args: argparse.Namespace) -> None:
             progress_callback=progress_callback,
         )
 
-    cleanup_signal_handlers()
-
     # 10. Report result + optional verification
     if args.verify:
-        verify_paths = original_file_paths_str if args.skip_existing else file_paths_str
+        verify_paths = file_paths_str
         basenames = [os.path.basename(fp) for fp in verify_paths]
         console.print("Upload complete")
         console.print("Verifying checksums...")

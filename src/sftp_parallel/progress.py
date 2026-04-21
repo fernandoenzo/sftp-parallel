@@ -60,7 +60,10 @@ def create_upload_progress(
     ...     advance_progress(progress, task, 3)  # 3 files completed
     ...     advance_progress(progress, task, 5)  # 5 more files completed
     """
-    description = f"Uploading {total_files} files to {host}:{remote_dir}"
+    description = (
+        f"Uploading {total_files} file"
+        f"{'s' if total_files != 1 else ''} to {host}:{remote_dir}"
+    )
 
     progress = Progress(
         TextColumn("[progress.description]{task.description}"),
