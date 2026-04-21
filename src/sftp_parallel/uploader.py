@@ -75,7 +75,7 @@ def _cleanup_proc(proc: subprocess.Popen[str], pgid: int = 0) -> None:
         if pipe is not None:
             try:
                 pipe.close()
-            except OSError:
+            except Exception:
                 pass
     try:
         proc.wait(timeout=_PROCESS_KILL_WAIT_SECONDS)
@@ -261,7 +261,12 @@ def upload_files(
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             futures = {executor.submit(upload_one, fp): fp for fp in file_paths}
             for future in as_completed(futures):
-                if not future.result():
+                try:
+                    if not future.result():
+                        with lock:
+                            failed_count += 1
+                except Exception:
+                    logger.exception("Worker crashed unexpectedly")
                     with lock:
                         failed_count += 1
     finally:

@@ -54,7 +54,7 @@ def validate_remote_dir(remote_dir: str) -> None:
     """Validate a remote directory path.
 
     Raises ``ValueError`` if *remote_dir* is empty, contains control
-    characters (NUL, newline, carriage return), or starts with a dash.
+    characters, or starts with a dash.
 
     Note
     ----
@@ -69,9 +69,9 @@ def validate_remote_dir(remote_dir: str) -> None:
             "(could be interpreted as an option by remote commands)"
         )
     for char in remote_dir:
-        if char in ("\x00", "\n", "\r"):
+        if unicodedata.category(char).startswith("C"):
             raise ValueError(
-                f"remote directory contains {repr(char)}: {remote_dir!r}"
+                f"remote directory contains control character ({repr(char)}): {remote_dir!r}"
             )
 
 
@@ -141,17 +141,17 @@ def sftp_escape(path: str) -> str:
 
 
 def _validate_sftp_path(path: str, label: str = "path") -> None:
-    """Validate a path is safe for SFTP batch commands (no newlines or NUL).
+    """Validate a path is safe for SFTP batch commands (no control characters).
 
-    Raises ``ValueError`` if the path contains NUL, newline, or carriage return
-    characters, which would break the line-oriented SFTP batch protocol.
+    Raises ``ValueError`` if the path contains control characters,
+    which would break the line-oriented SFTP batch protocol.
     """
-    if "\n" in path or "\r" in path or "\0" in path:
-        raise ValueError(
-            f"{label} contains newline or NUL characters, "
-            "which would break SFTP batch commands: "
-            f"{path!r}"
-        )
+    for char in path:
+        if unicodedata.category(char).startswith("C"):
+            raise ValueError(
+                f"{label} contains control character ({repr(char)}), "
+                f"which would break SFTP batch commands: {path!r}"
+            )
 
 
 def build_batch_commands(remote_dir: str, file_paths: list[str]) -> str:

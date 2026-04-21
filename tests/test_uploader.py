@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -192,6 +192,43 @@ class TestUploadFiles:
         with pytest.raises(ValueError):
             upload_files("user@host", ["/tmp/a.txt"], "", port=22)
 
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_worker_exception_counted_as_failure(self, mock_popen_cls, mock_setup, mock_cleanup):
+        call_count = 0
+
+        def popen_side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            mock_proc = MagicMock()
+            if call_count == 1:
+                mock_proc.communicate.side_effect = RuntimeError("unexpected crash")
+                mock_proc.pid = 10000 + call_count
+                mock_proc.returncode = 1
+            else:
+                mock_proc.communicate.return_value = ("", "")
+                mock_proc.returncode = 0
+                mock_proc.pid = 10000 + call_count
+            return mock_proc
+
+        mock_popen_cls.side_effect = popen_side_effect
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            success, failed_count = upload_files(
+                "user@host", [tmp_path, tmp_path + "_2"], "/remote", num_workers=1, port=22
+            )
+            assert failed_count >= 1
+        finally:
+            import os
+            os.unlink(tmp_path)
+            if os.path.exists(tmp_path + "_2"):
+                os.unlink(tmp_path + "_2")
+
 
 # --- run_sftp ---
 
@@ -204,3 +241,49 @@ class TestRunSftp:
     def test_invalid_port(self):
         with pytest.raises(ValueError):
             run_sftp("user@host", "cd /tmp\nbye", port=0)
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_success(self, mock_popen_cls):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("output", "")
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+        mock_popen_cls.return_value = mock_proc
+        success, output = run_sftp("user@host", "cd /tmp\nbye")
+        assert success is True
+        assert "output" in output
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_sftp_binary_not_found(self, mock_popen_cls):
+        mock_popen_cls.side_effect = FileNotFoundError("sftp not found")
+        success, output = run_sftp("user@host", "cd /tmp\nbye")
+        assert success is False
+        assert "not found" in output
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_os_error(self, mock_popen_cls):
+        mock_popen_cls.side_effect = OSError("permission denied")
+        success, output = run_sftp("user@host", "cd /tmp\nbye")
+        assert success is False
+        assert "OS error" in output
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_timeout_expired(self, mock_popen_cls):
+        mock_proc = MagicMock()
+        mock_proc.communicate.side_effect = subprocess.TimeoutExpired("sftp", 30)
+        mock_proc.pid = 12345
+        mock_popen_cls.return_value = mock_proc
+        success, output = run_sftp("user@host", "cd /tmp\nbye")
+        assert success is False
+        assert "timed out" in output
+
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_nonzero_returncode(self, mock_popen_cls):
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("", "error output")
+        mock_proc.returncode = 1
+        mock_proc.pid = 12345
+        mock_popen_cls.return_value = mock_proc
+        success, output = run_sftp("user@host", "cd /tmp\nbye")
+        assert success is False
+        assert "error output" in output

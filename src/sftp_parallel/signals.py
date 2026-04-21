@@ -47,34 +47,35 @@ def _make_signal_handler(
         if _handling_signal:
             return
         _handling_signal = True
-
-        locked = popen_lock.acquire(blocking=False)
         try:
-            snapshot = list(popens)
-        finally:
-            if locked:
-                popen_lock.release()
-
-        for _proc, pgid in snapshot:
-            if pgid > 1:
-                try:
-                    os.killpg(pgid, signal.SIGTERM)
-                except (ProcessLookupError, OSError):
-                    pass
-
-        for proc, pgid in snapshot:
+            locked = popen_lock.acquire(blocking=False)
             try:
-                proc.wait(timeout=_SIGTERM_WAIT_SECONDS)
-            except subprocess.TimeoutExpired:
+                snapshot = list(popens)
+            finally:
+                if locked:
+                    popen_lock.release()
+
+            for _proc, pgid in snapshot:
                 if pgid > 1:
                     try:
-                        os.killpg(pgid, signal.SIGKILL)
+                        os.killpg(pgid, signal.SIGTERM)
                     except (ProcessLookupError, OSError):
                         pass
 
-        console.print("[bold red]Interrupted[/bold red]")
-        _handling_signal = False
-        sys.exit(128 + signum)
+            for proc, pgid in snapshot:
+                try:
+                    proc.wait(timeout=_SIGTERM_WAIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    if pgid > 1:
+                        try:
+                            os.killpg(pgid, signal.SIGKILL)
+                        except (ProcessLookupError, OSError):
+                            pass
+
+            console.print("[bold red]Interrupted[/bold red]")
+            sys.exit(128 + signum)
+        finally:
+            _handling_signal = False
 
     return handler
 
