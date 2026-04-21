@@ -108,6 +108,11 @@ def run_sftp(
     tuple[bool, str]
         A ``(success, output)`` pair where *success* is ``True`` when the
         sftp process exited with code 0.
+
+    Raises
+    ------
+    ValueError
+        If *host* or *port* fails validation.
     """
     validate_host(host)
     validate_port(port)
@@ -178,6 +183,11 @@ def upload_files(
     tuple[bool, int]
         ``(all_success, failed_count)`` where *all_success* is ``True``
         when every file uploaded successfully.
+
+    Raises
+    ------
+    ValueError
+        If *host*, *port*, or *remote_dir* fails validation.
     """
     validate_host(host)
     validate_port(port)
@@ -336,6 +346,12 @@ def get_remote_file_sizes(
     dict[str, int] | None
         Mapping of filename to file size in bytes.  Returns ``None``
         on failure (e.g., SFTP connection error).
+
+    Raises
+    ------
+    ValueError
+        If *host*, *port*, or *remote_dir* fails validation, or if
+        *remote_dir* contains control characters (via :func:`~sftp_parallel.batch._validate_sftp_path`).
     """
     validate_host(host)
     validate_port(port)

@@ -32,6 +32,11 @@ def compute_local_checksum(filepath: str, algorithm: str = "sha256") -> str:
     -------
     str
         Hex digest of the file's content.
+
+    Raises
+    ------
+    OSError
+        If *filepath* cannot be opened or read.
     """
     h = hashlib.new(algorithm)
     with open(filepath, "rb") as f:
@@ -108,8 +113,14 @@ def compute_remote_checksums(
     Raises
     ------
     ValueError
-        If *host*, *remote_dir*, or *port* is invalid, or if *algorithm*
-        contains disallowed characters.
+        If *host*, *remote_dir*, or *port* is invalid, if *algorithm*
+        contains disallowed characters, or if any filename in *filenames*
+        fails :func:`~sftp_parallel.batch.validate_filename`.
+    subprocess.TimeoutExpired
+        If the SSH command times out (caught internally, returns ``None``).
+    OSError
+        If the SSH subprocess cannot be launched (caught internally,
+        returns ``None``).
 
     Note
     ----
@@ -208,6 +219,12 @@ def verify_uploads(
     -------
     tuple[list[str], list[str]]
         ``(matched, mismatched)`` — two lists of filenames.
+
+    Raises
+    ------
+    ValueError
+        If *host*, *remote_dir*, *port*, or any filename in *local_files*
+        fails validation (via :func:`~sftp_parallel.verify.compute_remote_checksums`).
     """
     remote_checksums = compute_remote_checksums(
         host, remote_dir, local_files, algorithm=algorithm, timeout=timeout, port=port

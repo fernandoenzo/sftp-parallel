@@ -84,9 +84,8 @@ def validate_filename(name: str) -> bool:
     - Is ``.`` or ``..``
     - Starts with ``-`` (could be interpreted as an option)
     - Exceeds 255 bytes when encoded as UTF-8
-    - Contains NUL, newline, CR, TAB, ``/``, or ``\\``
+    - Contains NUL, newline, CR, TAB, ``/``, ``\\``, or any other Unicode control character (category ``C*``)
     - Is not a plain basename (i.e. contains a path separator)
-    - Contains Unicode control characters (category ``C*``)
 
     Filenames containing ``..`` as a substring (e.g. ``file..txt``) are
     accepted, as they cannot traverse directories without path separators.
@@ -175,7 +174,7 @@ def build_batch_commands(remote_dir: str, file_paths: list[str]) -> str:
     Raises
     ------
     ValueError
-        If any file path or the remote directory contains newline
+        If any file path or the remote directory contains control
         characters that would break the SFTP batch protocol.
 
     Note
