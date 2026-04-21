@@ -297,6 +297,33 @@ class TestUploadFiles:
             import os
             os.unlink(tmp_path)
 
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
+    @patch("sftp_parallel.uploader.os.getpgid", return_value=999)
+    @patch("sftp_parallel.uploader.os.path.getsize", return_value=100)
+    @patch("sftp_parallel.uploader.subprocess.Popen")
+    def test_worker_nonzero_returncode(self, mock_popen_cls, mock_getsize, mock_getpgid, mock_setup, mock_cleanup):
+        """Worker returns False when sftp process exits with non-zero code."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("", "SFTP error")
+        mock_proc.returncode = 1
+        mock_proc.pid = 54321
+        mock_popen_cls.return_value = mock_proc
+
+        try:
+            success, failed = upload_files(
+                "user@host", [tmp_path], "/remote", num_workers=1, port=22
+            )
+            assert success is False
+            assert failed == 1
+        finally:
+            import os
+            os.unlink(tmp_path)
+
 
 # --- run_sftp ---
 

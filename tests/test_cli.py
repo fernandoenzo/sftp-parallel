@@ -165,6 +165,48 @@ class TestSkipExisting:
         with pytest.raises(SystemExit):
             main(["-s", "user@host", "-f", "a.txt", "--skip-existing", "--verify"])
 
+    @patch("sftp_parallel.cli.compute_remote_checksums")
+    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    @patch("sftp_parallel.cli.resolve_file_patterns")
+    def test_skip_existing_all_matched_no_verify(
+        self, mock_resolve, mock_sizes, mock_upload, mock_checksums
+    ):
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
+            tmp_path = tmp.name
+        try:
+            mock_resolve.return_value = [Path(tmp_path)]
+            mock_sizes.return_value = {os.path.basename(tmp_path): os.path.getsize(tmp_path)}
+            with pytest.raises(SystemExit) as exc_info:
+                main(["-s", "user@host", "-f", tmp_path, "--skip-existing"])
+            assert exc_info.value.code == 0
+            mock_upload.assert_not_called()
+        finally:
+            os.unlink(tmp_path)
+
+    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    @patch("sftp_parallel.cli.resolve_file_patterns")
+    def test_skip_existing_sftp_failure_fallback(
+        self, mock_resolve, mock_sizes, mock_upload
+    ):
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
+            tmp_path = tmp.name
+        try:
+            mock_resolve.return_value = [Path(tmp_path)]
+            mock_sizes.return_value = None  # SFTP failure
+            mock_upload.return_value = (True, 0)
+            with pytest.raises(SystemExit) as exc_info:
+                main(["-s", "user@host", "-f", tmp_path, "--skip-existing"])
+            assert exc_info.value.code == 0
+            mock_upload.assert_called_once()
+        finally:
+            os.unlink(tmp_path)
+
 
 class TestVerifyInline:
     @patch("sftp_parallel.cli.compute_local_checksum")
