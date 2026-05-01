@@ -8,9 +8,12 @@ import subprocess
 import sys
 import threading
 from types import FrameType
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from rich.console import Console
+
+if TYPE_CHECKING:
+    from sftp_parallel.pty_worker import PTYWorker
 
 console = Console()
 
@@ -18,7 +21,14 @@ _original_sigint: Any = None
 _original_sigterm: Any = None
 
 _SIGTERM_WAIT_SECONDS = 2
-_handling_signal = False
+
+# NOTE: _handling_sigint and _handling_sigterm are module-level booleans
+# accessed from signal handlers. They are not protected by a lock because:
+# 1. Python's GIL makes single-byte bool reads/writes atomic on CPython
+# 2. The worst case (both signals fire simultaneously) results in one
+#    signal being handled and the other calling sys.exit() — acceptable.
+_handling_sigint = False
+_handling_sigterm = False
 
 
 def _make_signal_handler(
@@ -43,11 +53,22 @@ def _make_signal_handler(
     """
 
     def handler(signum: int, frame: FrameType | None) -> None:
-        global _handling_signal
-        if _handling_signal:
-            return
-        _handling_signal = True
+        global _handling_sigint, _handling_sigterm
+        if signum == signal.SIGINT:
+            if _handling_sigint:
+                return
+            _handling_sigint = True
+        elif signum == signal.SIGTERM:
+            if _handling_sigterm:
+                return
+            _handling_sigterm = True
+            # SIGTERM always overrides SIGINT in progress
         try:
+            # Non-blocking acquisition is intentional: if we can't get the lock,
+            # we proceed with a possibly-stale snapshot. Workers added after the
+            # snapshot are still cleaned up by their own finally block in
+            # _upload_one_via_pty, and workers removed are harmless (terminate()
+            # is idempotent).
             locked = popen_lock.acquire(blocking=False)
             try:
                 snapshot = list(popens)
@@ -75,7 +96,10 @@ def _make_signal_handler(
             console.print("[bold red]Interrupted[/bold red]")
             sys.exit(128 + signum)
         finally:
-            _handling_signal = False
+            if signum == signal.SIGINT:
+                _handling_sigint = False
+            elif signum == signal.SIGTERM:
+                _handling_sigterm = False
 
     return handler
 
@@ -99,6 +123,87 @@ def setup_signal_handlers(
     _original_sigterm = signal.getsignal(signal.SIGTERM)
 
     handler = _make_signal_handler(popens, popen_lock)
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
+
+def _make_signal_handler_v2(
+    active_workers: list[PTYWorker],
+    worker_lock: threading.Lock,
+) -> Callable[[int, FrameType | None], None]:
+    """Create a signal handler that terminates all PTYWorker instances.
+
+    Parameters
+    ----------
+    active_workers:
+        List of :class:`~sftp_parallel.pty_worker.PTYWorker` instances.
+    worker_lock:
+        A threading lock protecting *active_workers* from concurrent
+        modification.
+
+    Returns
+    -------
+    Callable[[int, FrameType | None], None]
+        A signal handler suitable for ``signal.signal()``.
+    """
+
+    def handler(signum: int, frame: FrameType | None) -> None:
+        global _handling_sigint, _handling_sigterm
+        if signum == signal.SIGINT:
+            if _handling_sigint:
+                return
+            _handling_sigint = True
+        elif signum == signal.SIGTERM:
+            if _handling_sigterm:
+                return
+            _handling_sigterm = True
+            # SIGTERM always overrides SIGINT in progress
+        try:
+            # Non-blocking acquisition is intentional: if we can't get the lock,
+            # we proceed with a possibly-stale snapshot. Workers added after the
+            # snapshot are still cleaned up by their own finally block in
+            # _upload_one_via_pty, and workers removed are harmless (terminate()
+            # is idempotent).
+            locked = worker_lock.acquire(blocking=False)
+            try:
+                snapshot = list(active_workers)
+            finally:
+                if locked:
+                    worker_lock.release()
+
+            for worker in snapshot:
+                worker.terminate()
+
+            console.print("[bold red]Interrupted[/bold red]")
+            sys.exit(128 + signum)
+        finally:
+            if signum == signal.SIGINT:
+                _handling_sigint = False
+            elif signum == signal.SIGTERM:
+                _handling_sigterm = False
+
+    return handler
+
+
+def setup_signal_handlers_v2(
+    active_workers: list[PTYWorker],
+    worker_lock: threading.Lock,
+) -> None:
+    """Register SIGINT and SIGTERM handlers that terminate PTYWorker instances.
+
+    Parameters
+    ----------
+    active_workers:
+        List of :class:`~sftp_parallel.pty_worker.PTYWorker` instances.
+    worker_lock:
+        A threading lock protecting *active_workers*.
+    """
+    global _original_sigint, _original_sigterm
+
+    _original_sigint = signal.getsignal(signal.SIGINT)
+    _original_sigterm = signal.getsignal(signal.SIGTERM)
+
+    handler = _make_signal_handler_v2(active_workers, worker_lock)
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
 

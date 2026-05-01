@@ -11,13 +11,10 @@ import signal
 import subprocess
 import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from sftp_parallel.batch import (
     DEFAULT_TIMEOUT,
-    MIN_TRANSFER_RATE,
-    CONNECTION_OVERHEAD,
-    build_batch_commands,
     sftp_escape,
     validate_filename,
     validate_host,
@@ -25,7 +22,11 @@ from sftp_parallel.batch import (
     validate_remote_dir,
     _validate_sftp_path,
 )
-from sftp_parallel.signals import cleanup_signal_handlers, setup_signal_handlers
+from sftp_parallel.pty_worker import PTYWorker
+from sftp_parallel.signals import (
+    cleanup_signal_handlers,
+    setup_signal_handlers_v2,
+)
 
 _PROCESS_KILL_WAIT_SECONDS = 5
 _SFTP_TIMEOUT_MULTIPLIER = 3
@@ -77,7 +78,7 @@ def _cleanup_proc(proc: subprocess.Popen[str], pgid: int = 0) -> None:
             try:
                 pipe.close()
             except Exception:
-                pass
+                logger.debug("Error closing pipe during cleanup", exc_info=True)
     try:
         proc.wait(timeout=_PROCESS_KILL_WAIT_SECONDS)
     except (OSError, subprocess.TimeoutExpired):
@@ -149,18 +150,57 @@ def run_sftp(
     return success, output
 
 
+def _upload_one_via_pty(
+    host: str,
+    file_path: str,
+    remote_dir: str,
+    port: int,
+    connect_timeout: int,
+    idle_timeout: int,
+    active_workers: list[PTYWorker],
+    worker_lock: threading.Lock,
+    progress_callback: Callable[[str, int, int], None] | None,
+) -> bool:
+    """Upload a single file via PTYWorker. Returns True on success."""
+    worker = PTYWorker(
+        host=host,
+        file_path=file_path,
+        remote_dir=remote_dir,
+        port=port,
+        connect_timeout=connect_timeout,
+        idle_timeout=idle_timeout,
+        prompt_timeout=idle_timeout,
+        progress_callback=progress_callback,
+    )
+    with worker_lock:
+        active_workers.append(worker)
+    try:
+        result = worker.run()
+        if not result.success and result.error_message:
+            logger.error(
+                "Upload failed for %s: %s", result.file_path, result.error_message
+            )
+        return result.success
+    except Exception:
+        logger.exception("Unexpected error uploading %s", file_path)
+        return False
+    finally:
+        with worker_lock:
+            if worker in active_workers:
+                active_workers.remove(worker)
+
+
 def upload_files(
     host: str,
     file_paths: list[str],
     remote_dir: str,
     num_workers: int = 2,
     port: int = 22,
-    progress_callback: Callable[[str], None] | None = None,
+    progress_callback: Callable[[str, int, int], None] | None = None,
+    completion_callback: Callable[[str, bool], None] | None = None,
+    idle_timeout: int = 30,
 ) -> tuple[bool, int]:
-    """Upload files using *num_workers* parallel sftp sessions.
-
-    Each worker picks one file from a shared queue, opens an sftp
-    session, uploads that single file with ``put -f``, then picks the next.
+    """Upload files using PTY-based interactive SFTP with real-time progress.
 
     Parameters
     ----------
@@ -175,8 +215,14 @@ def upload_files(
     port:
         Remote port number.
     progress_callback:
-        Optional callback invoked per successfully uploaded file with
-        the filename.  Signature: ``callback(str) -> None``.
+        Optional callback invoked with progress updates.
+        Signature: ``callback(file_path, bytes_transferred, total_bytes)``.
+    completion_callback:
+        Optional callback invoked when each file upload completes.
+        Signature: ``callback(file_path, success)`` where *success* is
+        ``True`` when the upload succeeded.
+    idle_timeout:
+        Seconds without progress before killing SFTP process (default 30).
 
     Returns
     -------
@@ -196,90 +242,61 @@ def upload_files(
     if not file_paths:
         return True, 0
 
+    connect_timeout = DEFAULT_TIMEOUT
     lock = threading.Lock()
-    active_popens: list[tuple[subprocess.Popen[str], int]] = []
-    popen_lock = threading.Lock()
-    timeout = DEFAULT_TIMEOUT
+    active_workers: list[PTYWorker] = []
+    worker_lock = threading.Lock()
 
-    def upload_one(file_path: str) -> bool:
-        proc: subprocess.Popen[str] | None = None
-        pgid = 0
-        try:
-            batch_cmds = build_batch_commands(remote_dir, [file_path])
-            cmd = _build_sftp_cmd(host, timeout, port=port)
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-            pgid = os.getpgid(proc.pid)
-            with popen_lock:
-                active_popens.append((proc, pgid))
-            try:
-                file_size = os.path.getsize(file_path)
-            except OSError:
-                file_size = 0
-            transfer_timeout = max(
-                timeout * _SFTP_TIMEOUT_MULTIPLIER,
-                int(file_size / MIN_TRANSFER_RATE) + CONNECTION_OVERHEAD,
-            )
-            try:
-                proc.communicate(input=batch_cmds, timeout=transfer_timeout)
-            except subprocess.TimeoutExpired:
-                _cleanup_proc(proc, pgid)
-                return False
-            except OSError:
-                _cleanup_proc(proc, pgid)
-                return False
-            except Exception:
-                logger.exception("Unexpected error communicating with SFTP process for %s", file_path)
-                _cleanup_proc(proc, pgid)
-                return False
-            finally:
-                with popen_lock:
-                    if (proc, pgid) in active_popens:
-                        active_popens.remove((proc, pgid))
-            if proc.returncode != 0:
-                return False
-            if progress_callback is not None:
-                try:
-                    progress_callback(file_path)
-                except Exception:  # noqa: BLE001
-                    pass
-            return True
-        except (OSError, ValueError):
-            if proc is not None:
-                with popen_lock:
-                    if (proc, pgid) in active_popens:
-                        active_popens.remove((proc, pgid))
-                _cleanup_proc(proc, pgid)
-            return False
-        except Exception:
-            logger.exception("Unexpected error uploading %s", file_path)
-            if proc is not None:
-                with popen_lock:
-                    if (proc, pgid) in active_popens:
-                        active_popens.remove((proc, pgid))
-                _cleanup_proc(proc, pgid)
-            return False
-
-    setup_signal_handlers(active_popens, popen_lock)
+    setup_signal_handlers_v2(active_workers, worker_lock)
     try:
         failed_count = 0
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = {executor.submit(upload_one, fp): fp for fp in file_paths}
-            for future in as_completed(futures):
+            futures = {
+                executor.submit(
+                    _upload_one_via_pty,
+                    host,
+                    fp,
+                    remote_dir,
+                    port,
+                    connect_timeout,
+                    idle_timeout,
+                    active_workers,
+                    worker_lock,
+                    progress_callback,
+                ): fp
+                for fp in file_paths
+            }
+            for future in futures:
+                fp = futures[future]
                 try:
-                    if not future.result():
+                    success = future.result(timeout=idle_timeout * 2 + 120)
+                    if not success:
                         with lock:
                             failed_count += 1
+                    if completion_callback is not None:
+                        try:
+                            completion_callback(fp, success)
+                        except Exception:
+                            logger.debug("Completion callback failed for %s", fp, exc_info=True)
+                except FuturesTimeoutError:
+                    logger.error("Worker timed out for %s", fp)
+                    with lock:
+                        failed_count += 1
+                    success = False
+                    if completion_callback is not None:
+                        try:
+                            completion_callback(fp, success)
+                        except Exception:
+                            logger.debug("Completion callback failed for %s", fp, exc_info=True)
                 except Exception:
                     logger.exception("Worker crashed unexpectedly")
                     with lock:
                         failed_count += 1
+                    if completion_callback is not None:
+                        try:
+                            completion_callback(fp, False)
+                        except Exception:
+                            logger.debug("Completion callback failed for %s", fp, exc_info=True)
     finally:
         cleanup_signal_handlers()
 

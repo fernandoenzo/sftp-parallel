@@ -16,7 +16,8 @@ def validate_host(host: str) -> None:
     """Validate a remote host specification.
 
     Raises ``ValueError`` if *host* is empty, contains only whitespace,
-    or contains control characters.
+    contains control characters, or contains segments that look like
+    SSH options (to prevent option injection).
 
     Warns if *host* contains a colon (``:``), which typically indicates
     an embedded port (e.g., ``user@host:2222``). SSH will use the
@@ -24,11 +25,23 @@ def validate_host(host: str) -> None:
     """
     if not host or not host.strip():
         raise ValueError("host must not be empty")
+    if host.startswith("-"):
+        raise ValueError("host must not start with '-'")
     for char in host:
         cat = unicodedata.category(char)
         if cat.startswith("C"):
             raise ValueError(
                 f"host contains control character ({repr(char)})"
+            )
+    # Reject SSH option injection: spaces followed by dashes
+    # and standalone dashes at position boundaries
+    parts = host.split()
+    for part in parts:
+        if part.startswith("-"):
+            raise ValueError(
+                f"host contains argument-like segment {part!r} — "
+                "to avoid SSH option injection, the host must not "
+                "contain segments starting with '-'"
             )
     if ":" in host:
         warnings.warn(
@@ -108,6 +121,8 @@ def validate_filename(name: str) -> bool:
     if "\x00" in name:
         return False
     if "\n" in name or "\r" in name or "\t" in name:
+        # TAB is intentionally rejected: it can be used to visually
+        # disguise path components in directory listings
         return False
     if "/" in name or "\\" in name:
         return False
@@ -139,17 +154,38 @@ def sftp_escape(path: str) -> str:
     return escaped.replace('"', '\\"')
 
 
+def sftp_escape_interactive(path: str) -> str:
+    """Escape a path for use in interactive SFTP commands (backslash escaping).
+
+    Escapes spaces, backslashes, double quotes, and single quotes with
+    backslashes. This is the escaping required for interactive SFTP mode
+    (as opposed to :func:`sftp_escape` which is for double-quoted batch mode).
+
+    Note
+    ----
+    This function does **not** escape newlines. Callers must ensure that
+    paths passed to SFTP commands do not contain ``\\n`` or ``\\r``.
+    Use :func:`_validate_sftp_path` to check before calling this function.
+    """
+    # Order matters: escape backslashes first to avoid double-escaping
+    result = path.replace("\\", "\\\\")
+    result = result.replace('"', '\\"')
+    result = result.replace("'", "\\'")
+    result = result.replace(" ", "\\ ")
+    return result
+
+
 def _validate_sftp_path(path: str, label: str = "path") -> None:
-    """Validate a path is safe for SFTP batch commands (no control characters).
+    """Validate a path is safe for SFTP commands (no control characters).
 
     Raises ``ValueError`` if the path contains control characters,
-    which would break the line-oriented SFTP batch protocol.
+    which would break the line-oriented SFTP protocol.
     """
     for char in path:
         if unicodedata.category(char).startswith("C"):
             raise ValueError(
                 f"{label} contains control character ({repr(char)}), "
-                f"which would break SFTP batch commands: {path!r}"
+                f"which would break SFTP commands: {path!r}"
             )
 
 
@@ -195,3 +231,41 @@ def build_batch_commands(remote_dir: str, file_paths: list[str]) -> str:
 
     commands.append("bye")
     return "\n".join(commands)
+
+
+def build_interactive_commands(remote_dir: str, file_path: str) -> list[str]:
+    """Generate SFTP commands for interactive mode (one file per session).
+
+    Unlike :func:`build_batch_commands`, this returns a list of individual
+    commands (not a single string) because they are sent one-by-one via the
+    PTY writer thread after each ``sftp>`` prompt.
+
+    Paths are escaped with :func:`sftp_escape_interactive` (backslash-based)
+    rather than :func:`sftp_escape` (double-quote-based) because interactive
+    SFTP does not wrap arguments in double quotes.
+
+    Parameters
+    ----------
+    remote_dir:
+        Remote directory path to upload to.
+    file_path:
+        Local file path to upload.
+
+    Returns
+    -------
+    list[str]
+        Ordered list: ``cd``, ``put -f``, ``bye``.
+
+    Raises
+    ------
+    ValueError
+        If *remote_dir* or *file_path* contains control characters.
+    """
+    _validate_sftp_path(remote_dir, "remote directory")
+    _validate_sftp_path(file_path, "file path")
+
+    return [
+        f"cd {sftp_escape_interactive(remote_dir)}",
+        f"put -f {sftp_escape_interactive(file_path)}",
+        "bye",
+    ]
