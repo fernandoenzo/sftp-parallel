@@ -74,13 +74,13 @@ class TestMakeSignalHandler:
         handler = _make_signal_handler(popens, lock)
 
         import sftp_parallel.signals as sig_module
-        sig_module._handling_signal = True
+        sig_module._handling_sigint = True
 
         try:
             # Should not raise SystemExit — reentrancy guard blocks it
             handler(signal.SIGINT, None)
         finally:
-            sig_module._handling_signal = False
+            sig_module._handling_sigint = False
 
     def test_handling_signal_reset_after_exit(self):
         popens: list[tuple[subprocess.Popen[str], int]] = []
@@ -88,13 +88,13 @@ class TestMakeSignalHandler:
         handler = _make_signal_handler(popens, lock)
 
         import sftp_parallel.signals as sig_module
-        assert sig_module._handling_signal is False
+        assert sig_module._handling_sigint is False
 
         with pytest.raises(SystemExit):
             handler(signal.SIGINT, None)
 
-        # After exit, _handling_signal should be reset to False
-        assert sig_module._handling_signal is False
+        # After exit, _handling_sigint should be reset to False
+        assert sig_module._handling_sigint is False
 
 
 class TestSetupSignalHandlers:
@@ -141,3 +141,43 @@ class TestSignalHandlerPopenLock:
         # Should not deadlock
         with pytest.raises(SystemExit):
             handler(signal.SIGINT, None)
+
+    def test_sigint_during_sigint_is_ignored(self):
+        popens: list[tuple[subprocess.Popen[str], int]] = []
+        lock = threading.Lock()
+        handler = _make_signal_handler(popens, lock)
+
+        import sftp_parallel.signals as sig_module
+        sig_module._handling_sigint = True
+
+        try:
+            handler(signal.SIGINT, None)
+        finally:
+            sig_module._handling_sigint = False
+
+    def test_sigterm_not_ignored_during_sigint(self):
+        popens: list[tuple[subprocess.Popen[str], int]] = []
+        lock = threading.Lock()
+        handler = _make_signal_handler(popens, lock)
+
+        import sftp_parallel.signals as sig_module
+        sig_module._handling_sigint = True
+
+        try:
+            with pytest.raises(SystemExit):
+                handler(signal.SIGTERM, None)
+        finally:
+            sig_module._handling_sigint = False
+
+    def test_sigterm_during_sigterm_is_ignored(self):
+        popens: list[tuple[subprocess.Popen[str], int]] = []
+        lock = threading.Lock()
+        handler = _make_signal_handler(popens, lock)
+
+        import sftp_parallel.signals as sig_module
+        sig_module._handling_sigterm = True
+
+        try:
+            handler(signal.SIGTERM, None)
+        finally:
+            sig_module._handling_sigterm = False

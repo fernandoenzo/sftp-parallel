@@ -45,6 +45,25 @@ class TestValidateHost:
             assert len(w) == 1
             assert "embedded port" in str(w[0].message)
 
+    def test_host_with_ssh_option_injection(self):
+        with pytest.raises(ValueError, match="argument-like segment"):
+            validate_host("user@host -oProxyCommand=evil")
+
+    def test_host_starting_with_dash(self):
+        with pytest.raises(ValueError, match="must not start with '-'"):
+            validate_host("-oProxyCommand=evil")
+
+    def test_host_with_ssh_port_option(self):
+        with pytest.raises(ValueError, match="argument-like segment"):
+            validate_host("user@host -o Port=22")
+
+    def test_host_with_embedded_port_only_warns(self):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            validate_host("user@host:2222")
+            assert len(w) == 1
+            assert "embedded port" in str(w[0].message)
+
 
 # --- validate_port ---
 

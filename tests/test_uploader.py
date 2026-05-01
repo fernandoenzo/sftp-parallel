@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from sftp_parallel.pty_worker import WorkerResult
 from sftp_parallel.uploader import (
     _build_sftp_cmd,
     _cleanup_proc,
@@ -182,7 +183,7 @@ class TestFilterExistingFiles:
 
 
 class TestUploadFiles:
-    @patch("sftp_parallel.uploader.setup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
     def test_empty_file_list(self, mock_cleanup, mock_setup):
         success, count = upload_files("user@host", [], "/remote", port=22)
@@ -202,26 +203,21 @@ class TestUploadFiles:
             upload_files("user@host", ["/tmp/a.txt"], "", port=22)
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers")
-    @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_worker_exception_counted_as_failure(self, mock_popen_cls, mock_setup, mock_cleanup):
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.PTYWorker")
+    def test_worker_exception_counted_as_failure(self, mock_pty_cls, mock_setup, mock_cleanup):
         call_count = 0
 
-        def popen_side_effect(*args, **kwargs):
+        def run_side_effect():
             nonlocal call_count
             call_count += 1
-            mock_proc = MagicMock()
             if call_count == 1:
-                mock_proc.communicate.side_effect = RuntimeError("unexpected crash")
-                mock_proc.pid = 10000 + call_count
-                mock_proc.returncode = 1
-            else:
-                mock_proc.communicate.return_value = ("", "")
-                mock_proc.returncode = 0
-                mock_proc.pid = 10000 + call_count
-            return mock_proc
+                raise RuntimeError("unexpected crash")
+            return WorkerResult(success=True, file_path="/tmp/file2", bytes_transferred=0, file_size=0)
 
-        mock_popen_cls.side_effect = popen_side_effect
+        mock_worker = MagicMock()
+        mock_worker.run.side_effect = run_side_effect
+        mock_pty_cls.return_value = mock_worker
 
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -239,24 +235,20 @@ class TestUploadFiles:
                 os.unlink(tmp_path + "_2")
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers")
-    @patch("sftp_parallel.uploader.os.getpgid", return_value=999)
-    @patch("sftp_parallel.uploader.os.path.getsize", return_value=100)
-    @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_progress_callback_exception_swallowed(self, mock_popen_cls, mock_getsize, mock_getpgid, mock_setup, mock_cleanup):
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.PTYWorker")
+    def test_progress_callback_exception_swallowed(self, mock_pty_cls, mock_setup, mock_cleanup):
         """If progress_callback raises, upload should continue for other files."""
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
 
-        def bad_callback(filename):
+        def bad_callback(file_path, bytes_transferred, total_bytes):
             raise RuntimeError("callback exploded")
 
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-        mock_popen_cls.return_value = mock_proc
+        mock_worker = MagicMock()
+        mock_worker.run.return_value = WorkerResult(success=True, file_path=tmp_path, bytes_transferred=100, file_size=100)
+        mock_pty_cls.return_value = mock_worker
 
         try:
             success, failed = upload_files(
@@ -270,22 +262,17 @@ class TestUploadFiles:
             os.unlink(tmp_path)
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers")
-    @patch("sftp_parallel.uploader.os.getpgid", return_value=999)
-    @patch("sftp_parallel.uploader.os.path.getsize")
-    @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_getsize_oserror_continues_upload(self, mock_popen_cls, mock_getsize, mock_getpgid, mock_setup, mock_cleanup):
-        """If os.path.getsize raises OSError, file_size defaults to 0 and upload continues."""
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.PTYWorker")
+    def test_getsize_oserror_continues_upload(self, mock_pty_cls, mock_setup, mock_cleanup):
+        """If os.path.getsize raises OSError inside PTYWorker, upload continues (file_size defaults to 0)."""
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
 
-        mock_getsize.side_effect = OSError("cannot stat")
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_proc.pid = 12345
-        mock_popen_cls.return_value = mock_proc
+        mock_worker = MagicMock()
+        mock_worker.run.return_value = WorkerResult(success=True, file_path=tmp_path, bytes_transferred=0, file_size=0)
+        mock_pty_cls.return_value = mock_worker
 
         try:
             success, failed = upload_files(
@@ -298,21 +285,19 @@ class TestUploadFiles:
             os.unlink(tmp_path)
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers")
-    @patch("sftp_parallel.uploader.os.getpgid", return_value=999)
-    @patch("sftp_parallel.uploader.os.path.getsize", return_value=100)
-    @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_worker_nonzero_returncode(self, mock_popen_cls, mock_getsize, mock_getpgid, mock_setup, mock_cleanup):
-        """Worker returns False when sftp process exits with non-zero code."""
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.PTYWorker")
+    def test_worker_nonzero_returncode(self, mock_pty_cls, mock_setup, mock_cleanup):
+        """Worker returns False when PTYWorker reports failure."""
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
 
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "SFTP error")
-        mock_proc.returncode = 1
-        mock_proc.pid = 54321
-        mock_popen_cls.return_value = mock_proc
+        mock_worker = MagicMock()
+        mock_worker.run.return_value = WorkerResult(
+            success=False, file_path=tmp_path, bytes_transferred=0, file_size=0, error_message="SFTP error"
+        )
+        mock_pty_cls.return_value = mock_worker
 
         try:
             success, failed = upload_files(
@@ -324,6 +309,29 @@ class TestUploadFiles:
             import os
             os.unlink(tmp_path)
 
+
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    def test_worker_timeout_counted_as_failure(self, mock_setup, mock_cleanup):
+        """If future.result() hits TimeoutError, file is counted as failure."""
+        from concurrent.futures import TimeoutError as FuturesTimeoutError
+
+        with patch("sftp_parallel.uploader._upload_one_via_pty"), \
+             patch("sftp_parallel.uploader.ThreadPoolExecutor") as mock_executor_cls:
+            mock_executor = MagicMock()
+            mock_executor.__enter__ = MagicMock(return_value=mock_executor)
+            mock_executor.__exit__ = MagicMock(return_value=False)
+
+            mock_future = MagicMock()
+            mock_future.result.side_effect = FuturesTimeoutError("simulated timeout")
+            mock_executor.submit.return_value = mock_future
+
+            mock_executor_cls.return_value = mock_executor
+
+            success, failed = upload_files(
+                "user@host", ["/tmp/x.txt"], "/remote", num_workers=1, port=22, idle_timeout=30
+            )
+            assert failed == 1
 
 # --- run_sftp ---
 
