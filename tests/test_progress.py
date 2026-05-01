@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from rich.progress import Progress
 
 from sftp_parallel.progress import advance_progress, create_upload_progress
+from sftp_parallel.pty_worker import WorkerResult
 from sftp_parallel.uploader import upload_files
 
 
@@ -130,13 +131,44 @@ class TestAdvanceProgress:
         assert "data.csv" in call_arg
 
 
+def _make_worker_factory(success: bool = True, file_size: int = 100, invoke_callback: bool | None = None):
+    """Return a factory that creates PTYWorker mocks invoking progress_callback."""
+
+    def factory(*args, **kwargs):
+        mock = MagicMock()
+        cb = kwargs.get("progress_callback")
+        file_path = kwargs.get("file_path", "unknown")
+        bytes_transferred = file_size if success else 0
+        should_invoke = invoke_callback if invoke_callback is not None else success
+
+        def run():
+            if cb is not None and should_invoke:
+                cb(file_path, bytes_transferred, file_size)
+            return WorkerResult(
+                success=success,
+                file_path=file_path,
+                bytes_transferred=bytes_transferred,
+                file_size=file_size,
+            )
+
+        mock.run.side_effect = run
+        return mock
+
+    return factory
+
+
 class TestProgressIntegration:
     """Integration tests for progress with upload_files."""
 
-    @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
-    @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_progress_callback_advances_per_file(self, mock_popen: MagicMock, mock_getpgid: MagicMock, mock_popen_success: MagicMock) -> None:
-        mock_popen.return_value = mock_popen_success
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.PTYWorker", side_effect=_make_worker_factory(success=True))
+    def test_progress_callback_advances_per_file(
+        self,
+        MockPTYWorker: MagicMock,
+        mock_setup: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
         files = ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]
 
         with create_upload_progress(len(files), "user@host", "/remote") as (
@@ -144,8 +176,8 @@ class TestProgressIntegration:
             task_id,
         ):
 
-            def progress_callback(filename: str) -> None:
-                advance_progress(progress, task_id, filename)
+            def progress_callback(file_path: str, bytes_transferred: int, total_bytes: int) -> None:
+                advance_progress(progress, task_id, file_path)
 
             upload_files(
                 "user@host",
@@ -159,16 +191,20 @@ class TestProgressIntegration:
         task = progress._tasks[task_id]
         assert task.completed == 5
 
-    @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
-    @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_failed_file_does_not_advance_progress(self, mock_popen: MagicMock, mock_getpgid: MagicMock, mock_popen_success: MagicMock) -> None:
-        mock_popen_success.returncode = 1
-        mock_popen.return_value = mock_popen_success
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.PTYWorker", side_effect=_make_worker_factory(success=False))
+    def test_failed_file_does_not_advance_progress(
+        self,
+        MockPTYWorker: MagicMock,
+        mock_setup: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
 
         with create_upload_progress(2, "user@host", "/remote") as (progress, task_id):
 
-            def progress_callback(filename: str) -> None:
-                advance_progress(progress, task_id, filename)
+            def progress_callback(file_path: str, bytes_transferred: int, total_bytes: int) -> None:
+                advance_progress(progress, task_id, file_path)
 
             all_success, failed = upload_files(
                 "user@host",
@@ -184,21 +220,36 @@ class TestProgressIntegration:
         task = progress._tasks[task_id]
         assert task.completed == 0
 
-    @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
-    @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_mixed_success_and_failure(self, mock_popen: MagicMock, mock_getpgid: MagicMock, mock_popen_success: MagicMock) -> None:
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    def test_mixed_success_and_failure(
+        self,
+        mock_setup: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
         call_count = 0
 
-        def make_proc():
+        def factory(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            proc = MagicMock()
-            proc.communicate.return_value = ("", "")
-            proc.returncode = 0 if call_count <= 2 else 1
-            proc.pid = 10000 + call_count
-            return proc
+            success = call_count <= 2
+            mock = MagicMock()
+            cb = kwargs.get("progress_callback")
+            file_path = kwargs.get("file_path", f"file{call_count}.txt")
+            bytes_transferred = 100 if success else 0
 
-        mock_popen.side_effect = [make_proc() for _ in range(4)]
+            def run():
+                if cb is not None and success:
+                    cb(file_path, bytes_transferred, 100)
+                return WorkerResult(
+                    success=success,
+                    file_path=file_path,
+                    bytes_transferred=bytes_transferred,
+                    file_size=100,
+                )
+
+            mock.run.side_effect = run
+            return mock
 
         files = ["a.txt", "b.txt", "c.txt", "d.txt"]
 
@@ -207,26 +258,31 @@ class TestProgressIntegration:
             task_id,
         ):
 
-            def progress_callback(filename: str) -> None:
-                advance_progress(progress, task_id, filename)
+            def progress_callback(file_path: str, bytes_transferred: int, total_bytes: int) -> None:
+                advance_progress(progress, task_id, file_path)
 
-            upload_files(
-                "user@host",
-                files,
-                "/remote",
-                num_workers=2,
-                port=22,
-                progress_callback=progress_callback,
-            )
+            with patch("sftp_parallel.uploader.PTYWorker", side_effect=factory):
+                upload_files(
+                    "user@host",
+                    files,
+                    "/remote",
+                    num_workers=2,
+                    port=22,
+                    progress_callback=progress_callback,
+                )
 
         task = progress._tasks[task_id]
         assert task.completed == 2
 
-    @patch("sftp_parallel.uploader.os.getpgid", return_value=12345)
-    @patch("sftp_parallel.uploader.subprocess.Popen")
-    def test_no_progress_callback_works_normally(self, mock_popen: MagicMock, mock_getpgid: MagicMock, mock_popen_success: MagicMock) -> None:
-        mock_popen.return_value = mock_popen_success
-
+    @patch("sftp_parallel.uploader.cleanup_signal_handlers")
+    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.PTYWorker", side_effect=_make_worker_factory(success=True))
+    def test_no_progress_callback_works_normally(
+        self,
+        MockPTYWorker: MagicMock,
+        mock_setup: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
         all_success, failed_count = upload_files(
             "user@host",
             ["a.txt", "b.txt"],
@@ -249,8 +305,8 @@ class TestProgressWithEmptyFiles:
 
         with create_upload_progress(0, "user@host", "/remote") as (progress, task_id):
 
-            def progress_callback(filename: str) -> None:
-                advance_progress(progress, task_id, filename)
+            def progress_callback(file_path: str, bytes_transferred: int, total_bytes: int) -> None:
+                advance_progress(progress, task_id, file_path)
 
             all_success, failed_count = upload_files(
                 "user@host",
