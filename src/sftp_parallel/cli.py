@@ -73,6 +73,8 @@ def resolve_file_patterns(
                     result.append(entry.resolve())
                 else:
                     console.print(f"[yellow]Skipping unsafe filename:[/yellow] {name}")
+            elif entry.is_dir():
+                continue
             elif entry.is_file():
                 name = entry.name
                 if validate_filename(name):
@@ -97,6 +99,8 @@ def resolve_file_patterns(
                     console.print(
                         f"[yellow]Skipping symlink to non-regular file:[/yellow] {Path(pattern).name}"
                     )
+            elif resolved.is_dir():
+                continue
             elif resolved.is_file():
                 name = Path(pattern).name
                 if validate_filename(name):
@@ -121,6 +125,8 @@ def resolve_file_patterns(
                             console.print(
                                 f"[yellow]Skipping unsafe filename:[/yellow] {name}"
                             )
+                    elif entry.is_dir():
+                        continue
                     elif entry.is_file():
                         name = entry.name
                         if validate_filename(name):
