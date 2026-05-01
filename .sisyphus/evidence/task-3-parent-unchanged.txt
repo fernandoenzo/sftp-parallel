@@ -1,7 +1,0 @@
-handleParentSession exists: true
-Uses CONFIG.message: true
-Has end marker check: true
-Old parentID filter removed: true
-Has isChildSession routing: true
-Has handleChildSession call: true
-Has handleParentSession call: true

@@ -1,7 +1,0 @@
-→ Uploading 7 file(s) to fernando@beelink:/tmp/sftp-refactor-test with 2 parallel session(s)
-  [session 1] files: file with spaces.txt file1.txt file3.txt file5.txt  
-  [session 2] files: file$special.txt file2.txt file4.txt  
-✓ Session 1 completed
-✓ Session 2 completed
-→ Done: 7 file(s) uploaded
-Exit code: 0

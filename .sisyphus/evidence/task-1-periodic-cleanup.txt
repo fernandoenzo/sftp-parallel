@@ -1,9 +1,0 @@
-QA: Periodic cleanup call in watcher
-=== grep result for watcherTickCount ===
-  78: let watcherTickCount = 0
-  436: watcherTickCount++
-  437: if (watcherTickCount % 10 === 0) {
-
-Also verified cleanupStaleEntries called inside the if block.
-
-RESULT: PASS

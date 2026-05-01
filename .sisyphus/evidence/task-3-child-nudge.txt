@@ -1,4 +1,0 @@
-handleChildSession exists: true
-Uses nudgeMessage: true
-Has nudgeInProgress check: true
-Has maxNudges check: true
