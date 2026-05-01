@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -245,3 +246,119 @@ class TestUploadFailure:
         with pytest.raises(SystemExit) as exc_info:
             main(["-s", "user@host", "-f", "a.txt"])
         assert exc_info.value.code == 74
+
+
+class TestToctouGuard:
+    """Test that files disappearing between skip-existing and upload are handled."""
+
+    @patch("sftp_parallel.cli.compute_remote_checksums")
+    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    @patch("sftp_parallel.cli.resolve_file_patterns")
+    def test_disappeared_file_is_skipped(
+        self, mock_resolve, mock_sizes, mock_upload, mock_checksums
+    ):
+        """A file that disappears after skip-existing check should be skipped."""
+        import tempfile
+
+        # Create a real temp file so os.path.getsize works in the skip-existing block
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
+            tmp_path = tmp.name
+        try:
+            mock_resolve.return_value = [Path(tmp_path)]
+            mock_sizes.return_value = {}  # remote has no files => need_upload
+            mock_upload.return_value = (True, 0)
+
+            # After skip-existing produces need_upload, make the file disappear
+            original_getsize = os.path.getsize
+
+            def failing_getsize(path: str) -> int:
+                if path == tmp_path:
+                    raise OSError("File disappeared")
+                return original_getsize(path)
+
+            with patch("sftp_parallel.cli.os.path.getsize", side_effect=failing_getsize):
+                # The TOCTOU guard should catch the disappearing file
+                with pytest.raises(SystemExit) as exc_info:
+                    main(
+                        ["-s", "user@host", "-f", tmp_path, "--skip-existing"]
+                    )
+                assert exc_info.value.code == 0
+                # upload_files called but with empty file list (files removed by TOCTOU)
+                assert mock_upload.call_args[0][1] == []
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    @patch("sftp_parallel.cli.compute_remote_checksums")
+    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.get_remote_file_sizes")
+    @patch("sftp_parallel.cli.resolve_file_patterns")
+    def test_existing_file_passes_toctou(
+        self, mock_resolve, mock_sizes, mock_upload, mock_checksums
+    ):
+        """A file that still exists after skip-existing should pass the TOCTOU check."""
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
+            tmp_path = tmp.name
+        try:
+            mock_resolve.return_value = [Path(tmp_path)]
+            mock_sizes.return_value = {}  # remote has no files => need_upload
+            mock_upload.return_value = (True, 0)
+
+            with pytest.raises(SystemExit) as exc_info:
+                main(
+                    ["-s", "user@host", "-f", tmp_path, "--skip-existing"]
+                )
+            assert exc_info.value.code == 0
+            mock_upload.assert_called_once()
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+
+class TestSymlinkToSpecialFile:
+    """Test that symlinks to special files (FIFOs, etc.) are skipped."""
+
+    def test_symlink_to_fifo_is_skipped(self, tmp_path):
+        """A symlink pointing to a named pipe (FIFO) should be skipped."""
+        fifo_path = tmp_path / "real_fifo"
+        os.mkfifo(str(fifo_path))
+        link_path = tmp_path / "link_to_fifo"
+        link_path.symlink_to(fifo_path)
+
+        result = resolve_file_patterns([], cwd=tmp_path)
+        names = [p.name for p in result]
+        assert "link_to_fifo" not in names
+
+    def test_symlink_to_regular_file_is_included(self, tmp_path):
+        """A symlink pointing to a regular file should be included."""
+        real_file = tmp_path / "real.txt"
+        real_file.write_text("content")
+        link_path = tmp_path / "link_to_real.txt"
+        link_path.symlink_to(real_file)
+
+        result = resolve_file_patterns([], cwd=tmp_path)
+        names = [p.name for p in result]
+        assert "real.txt" in names or "link_to_real.txt" in names
+
+    def test_symlink_to_fifo_literal_pattern_skipped(self, tmp_path):
+        """A literal symlink to FIFO provided as a pattern should be skipped."""
+        fifo_path = tmp_path / "real_fifo"
+        os.mkfifo(str(fifo_path))
+        link_path = tmp_path / "link_to_fifo"
+        link_path.symlink_to(fifo_path)
+
+        result = resolve_file_patterns(["link_to_fifo"], cwd=tmp_path)
+        assert len(result) == 0
+
+    def test_symlink_to_regular_literal_pattern_included(self, tmp_path):
+        """A literal symlink to a regular file should be included."""
+        real_file = tmp_path / "real.txt"
+        real_file.write_text("content")
+        link_path = tmp_path / "link_to_real"
+        link_path.symlink_to(real_file)
+
+        result = resolve_file_patterns(["link_to_real"], cwd=tmp_path)
+        assert len(result) == 1

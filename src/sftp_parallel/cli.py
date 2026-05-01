@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 from rich.console import Console
+from rich.progress import TaskID
 
 from sftp_parallel import __version__
 from sftp_parallel.batch import (
@@ -16,7 +19,13 @@ from sftp_parallel.batch import (
     validate_port,
     validate_remote_dir,
 )
-from sftp_parallel.progress import advance_progress, create_upload_progress
+from sftp_parallel.progress import (
+    FileProgress,
+    add_worker_task,
+    complete_worker_task,
+    create_upload_progress_v2,
+    update_worker_progress,
+)
 from sftp_parallel.uploader import (
     get_remote_file_sizes,
     upload_files,
@@ -52,7 +61,19 @@ def resolve_file_patterns(
 
     if not patterns:
         for entry in base.iterdir():
-            if entry.is_file() or entry.is_symlink():
+            if entry.is_symlink():
+                target = os.path.realpath(entry)
+                if not os.path.isfile(target):
+                    console.print(
+                        f"[yellow]Skipping symlink to non-regular file:[/yellow] {entry.name}"
+                    )
+                    continue
+                name = entry.name
+                if validate_filename(name):
+                    result.append(entry.resolve())
+                else:
+                    console.print(f"[yellow]Skipping unsafe filename:[/yellow] {name}")
+            elif entry.is_file():
                 name = entry.name
                 if validate_filename(name):
                     result.append(entry.resolve())
@@ -61,7 +82,22 @@ def resolve_file_patterns(
     else:
         for pattern in patterns:
             resolved = (base / pattern).resolve()
-            if resolved.is_file():
+            original = base / pattern
+            if original.is_symlink():
+                target = os.path.realpath(original)
+                if os.path.isfile(target):
+                    name = Path(pattern).name
+                    if validate_filename(name):
+                        result.append(resolved)
+                    else:
+                        console.print(
+                            f"[yellow]Skipping unsafe filename:[/yellow] {name}"
+                        )
+                else:
+                    console.print(
+                        f"[yellow]Skipping symlink to non-regular file:[/yellow] {Path(pattern).name}"
+                    )
+            elif resolved.is_file():
                 name = Path(pattern).name
                 if validate_filename(name):
                     result.append(resolved)
@@ -71,7 +107,21 @@ def resolve_file_patterns(
                     )
             elif any(ch in pattern for ch in ("*", "?", "[")):
                 for entry in base.glob(pattern):
-                    if entry.is_file() or entry.is_symlink():
+                    if entry.is_symlink():
+                        target = os.path.realpath(entry)
+                        if not os.path.isfile(target):
+                            console.print(
+                                f"[yellow]Skipping symlink to non-regular file:[/yellow] {entry.name}"
+                            )
+                            continue
+                        name = entry.name
+                        if validate_filename(name):
+                            result.append(entry.resolve())
+                        else:
+                            console.print(
+                                f"[yellow]Skipping unsafe filename:[/yellow] {name}"
+                            )
+                    elif entry.is_file():
                         name = entry.name
                         if validate_filename(name):
                             result.append(entry.resolve())
@@ -163,6 +213,19 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="skip_existing",
         help="skip files that exist on remote with same size",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        dest="no_progress",
+        help="disable per-file progress bars (show only file count)",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=int,
+        default=120,
+        metavar="SECONDS",
+        help="seconds without progress before killing a transfer (default: 120)",
     )
     return parser
 
@@ -260,22 +323,62 @@ def _handle_upload(args: argparse.Namespace) -> None:
             )
             if not args.verify:
                 sys.exit(0)
-        file_paths_str = need_upload
+        # TOCTOU guard: re-check files still exist before upload
+        if need_upload:
+            validated: list[str] = []
+            for fp in need_upload:
+                try:
+                    _ = os.path.getsize(fp)
+                    validated.append(fp)
+                except OSError:
+                    console.print(
+                        f"[yellow]Warning: {fp} changed or disappeared, skipping[/yellow]"
+                    )
+            file_paths_str = validated
+        else:
+            file_paths_str = need_upload
 
-    # 8. Print upload info
-    dest_display = f"{args.server}:{remote_dir}" if remote_dir != "." else args.server
-    console.print(
-        f"Uploading {len(file_paths_str)} file"
-        f"{'s' if len(file_paths_str) != 1 else ''} to {dest_display}"
-    )
+    # 8. Upload with progress
+    total_files = len(file_paths_str)
+    results: list[tuple[str, bool, float]] = []
+    with create_upload_progress_v2(
+        total_files, args.server, remote_dir,
+        num_workers=min(args.threads, total_files),
+        disable=args.no_progress,
+    ) as progress:
+        # Map of file paths to (Rich TaskID, FileProgress)
+        task_map: dict[str, tuple[TaskID, FileProgress]] = {}
+        task_map_lock = threading.Lock()
+        files_completed = 0
+        files_failed = 0
 
-    # 9. Upload with progress
-    def progress_callback(filename: str) -> None:
-        advance_progress(progress, task, filename)
+        # Track when each file's upload began for elapsed-time display
+        file_start_times: dict[str, float] = {}
 
-    with create_upload_progress(
-        len(file_paths_str), args.server, remote_dir
-    ) as (progress, task):
+        def progress_callback(file_path: str, bytes_transferred: int, total_bytes: int) -> None:
+            with task_map_lock:
+                if file_path not in task_map:
+                    task_id = add_worker_task(progress, file_path, max(total_bytes, 1))
+                    fp = FileProgress(file_path=file_path, file_size=max(total_bytes, 1))
+                    task_map[file_path] = (task_id, fp)
+                    file_start_times[file_path] = time.monotonic()
+                task_id, fp = task_map[file_path]
+            update_worker_progress(progress, task_id, bytes_transferred, fp)
+
+        def completion_callback(file_path: str, success: bool) -> None:
+            nonlocal files_completed, files_failed
+            elapsed = time.monotonic() - file_start_times.get(file_path, time.monotonic())
+            with task_map_lock:
+                if file_path in task_map:
+                    task_id, fp = task_map[file_path]
+                    complete_worker_task(progress, task_id, fp, success, elapsed)
+                    del task_map[file_path]
+            results.append((os.path.basename(file_path), success, elapsed))
+            if success:
+                files_completed += 1
+            else:
+                files_failed += 1
+
         all_success, failed_count = upload_files(
             args.server,
             file_paths_str,
@@ -283,7 +386,15 @@ def _handle_upload(args: argparse.Namespace) -> None:
             num_workers=args.threads,
             port=args.port,
             progress_callback=progress_callback,
+            completion_callback=completion_callback,
+            idle_timeout=args.idle_timeout,
         )
+
+    if total_files > 1:
+        if files_failed == 0:
+            console.print(f"[bold green]Success[/bold green] — {files_completed}/{total_files} files uploaded")
+        else:
+            console.print(f"[bold red]Failed[/bold red] — {files_failed}/{total_files} files failed, {files_completed} succeeded")
 
     # 10. Report result + optional verification
     if args.verify:
@@ -337,7 +448,8 @@ def _handle_upload(args: argparse.Namespace) -> None:
             sys.exit(1)
 
     if all_success:
-        console.print("[bold green]Success[/bold green]")
+        if total_files <= 1:
+            console.print("[bold green]Success[/bold green]")
         sys.exit(0)
     else:
         console.print(
