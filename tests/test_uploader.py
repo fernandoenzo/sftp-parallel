@@ -183,7 +183,7 @@ class TestFilterExistingFiles:
 
 
 class TestUploadFiles:
-    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
     def test_empty_file_list(self, mock_cleanup, mock_setup):
         success, count = upload_files("user@host", [], "/remote", port=22)
@@ -203,7 +203,7 @@ class TestUploadFiles:
             upload_files("user@host", ["/tmp/a.txt"], "", port=22)
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
     @patch("sftp_parallel.uploader.PTYWorker")
     def test_worker_exception_counted_as_failure(self, mock_pty_cls, mock_setup, mock_cleanup):
         call_count = 0
@@ -213,7 +213,7 @@ class TestUploadFiles:
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("unexpected crash")
-            return WorkerResult(success=True, file_path="/tmp/file2", bytes_transferred=0, file_size=0)
+            return WorkerResult(success=True, file_path="/tmp/file2")
 
         mock_worker = MagicMock()
         mock_worker.run.side_effect = run_side_effect
@@ -235,7 +235,7 @@ class TestUploadFiles:
                 os.unlink(tmp_path + "_2")
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
     @patch("sftp_parallel.uploader.PTYWorker")
     def test_progress_callback_exception_swallowed(self, mock_pty_cls, mock_setup, mock_cleanup):
         """If progress_callback raises, upload should continue for other files."""
@@ -247,7 +247,7 @@ class TestUploadFiles:
             raise RuntimeError("callback exploded")
 
         mock_worker = MagicMock()
-        mock_worker.run.return_value = WorkerResult(success=True, file_path=tmp_path, bytes_transferred=100, file_size=100)
+        mock_worker.run.return_value = WorkerResult(success=True, file_path=str(tmp_path))
         mock_pty_cls.return_value = mock_worker
 
         try:
@@ -262,7 +262,7 @@ class TestUploadFiles:
             os.unlink(tmp_path)
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
     @patch("sftp_parallel.uploader.PTYWorker")
     def test_getsize_oserror_continues_upload(self, mock_pty_cls, mock_setup, mock_cleanup):
         """If os.path.getsize raises OSError inside PTYWorker, upload continues (file_size defaults to 0)."""
@@ -271,7 +271,7 @@ class TestUploadFiles:
             tmp_path = tmp.name
 
         mock_worker = MagicMock()
-        mock_worker.run.return_value = WorkerResult(success=True, file_path=tmp_path, bytes_transferred=0, file_size=0)
+        mock_worker.run.return_value = WorkerResult(success=True, file_path=str(tmp_path))
         mock_pty_cls.return_value = mock_worker
 
         try:
@@ -285,7 +285,7 @@ class TestUploadFiles:
             os.unlink(tmp_path)
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
     @patch("sftp_parallel.uploader.PTYWorker")
     def test_worker_nonzero_returncode(self, mock_pty_cls, mock_setup, mock_cleanup):
         """Worker returns False when PTYWorker reports failure."""
@@ -295,7 +295,7 @@ class TestUploadFiles:
 
         mock_worker = MagicMock()
         mock_worker.run.return_value = WorkerResult(
-            success=False, file_path=tmp_path, bytes_transferred=0, file_size=0, error_message="SFTP error"
+            success=False, file_path=str(tmp_path), error_message="SFTP error"
         )
         mock_pty_cls.return_value = mock_worker
 
@@ -311,7 +311,7 @@ class TestUploadFiles:
 
 
     @patch("sftp_parallel.uploader.cleanup_signal_handlers")
-    @patch("sftp_parallel.uploader.setup_signal_handlers_v2")
+    @patch("sftp_parallel.uploader.setup_signal_handlers")
     def test_worker_timeout_counted_as_failure(self, mock_setup, mock_cleanup):
         """If future.result() hits TimeoutError, file is counted as failure."""
         from concurrent.futures import TimeoutError as FuturesTimeoutError

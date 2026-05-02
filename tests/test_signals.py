@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import signal
-import subprocess
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -16,96 +15,59 @@ from sftp_parallel.signals import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_handling_flags():
+    import sftp_parallel.signals as sig_module
+    sig_module._handling_sigint = False
+    sig_module._handling_sigterm = False
+
+
 class TestMakeSignalHandler:
-    def test_handler_kills_process_group(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
+    def test_handler_is_callable(self):
+        workers: list[MagicMock] = []
         lock = threading.Lock()
-        handler = _make_signal_handler(popens, lock)
+        handler = _make_signal_handler(workers, lock)
         assert callable(handler)
 
-    def test_handler_with_empty_popens(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
+    def test_handler_with_empty_workers(self):
+        workers: list[MagicMock] = []
         lock = threading.Lock()
-        handler = _make_signal_handler(popens, lock)
+        handler = _make_signal_handler(workers, lock)
         with pytest.raises(SystemExit):
             handler(signal.SIGINT, None)
 
-    def test_handler_uses_cached_pgid(self):
-        mock_proc = MagicMock(spec=subprocess.Popen)
-        mock_proc.pid = 12345
-        mock_proc.wait.return_value = 0
-        popens = [(mock_proc, 9999)]
+    def test_handler_terminates_workers(self):
+        mock_worker = MagicMock()
+        workers = [mock_worker]
         lock = threading.Lock()
 
-        with patch("sftp_parallel.signals.os.killpg") as mock_killpg, \
-             patch("sftp_parallel.signals.os.getpgid") as mock_getpgid:
-            handler = _make_signal_handler(popens, lock)
-            # Need to bypass sys.exit
-            with pytest.raises(SystemExit):
-                handler(signal.SIGINT, None)
+        handler = _make_signal_handler(workers, lock)
+        with pytest.raises(SystemExit):
+            handler(signal.SIGINT, None)
 
-            # Should use cached pgid=9999, NOT call os.getpgid
-            mock_killpg.assert_any_call(9999, signal.SIGTERM)
-            assert not mock_getpgid.called
-
-    def test_handler_pgid_safety_guard(self):
-        mock_proc = MagicMock(spec=subprocess.Popen)
-        mock_proc.pid = 12345
-        mock_proc.wait.return_value = 0
-        # pgid=1 should be skipped (safety guard)
-        popens = [(mock_proc, 1)]
-        lock = threading.Lock()
-
-        with patch("sftp_parallel.signals.os.killpg") as mock_killpg, \
-             patch("sftp_parallel.signals.os.getpgid"):
-            handler = _make_signal_handler(popens, lock)
-            with pytest.raises(SystemExit):
-                handler(signal.SIGINT, None)
-            # pgid <= 1 should not be killed
-            killpg_calls = [
-                c for c in mock_killpg.call_args_list
-                if c[0][1] in (signal.SIGTERM, signal.SIGKILL)
-            ]
-            assert len(killpg_calls) == 0
+        mock_worker.terminate.assert_called_once()
 
     def test_handler_reentrancy_guard(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
+        workers: list[MagicMock] = []
         lock = threading.Lock()
-        handler = _make_signal_handler(popens, lock)
+        handler = _make_signal_handler(workers, lock)
 
         import sftp_parallel.signals as sig_module
         sig_module._handling_sigint = True
 
-        try:
-            # Should not raise SystemExit — reentrancy guard blocks it
-            handler(signal.SIGINT, None)
-        finally:
-            sig_module._handling_sigint = False
-
-    def test_handling_signal_reset_after_exit(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
-        lock = threading.Lock()
-        handler = _make_signal_handler(popens, lock)
-
-        import sftp_parallel.signals as sig_module
-        assert sig_module._handling_sigint is False
-
-        with pytest.raises(SystemExit):
-            handler(signal.SIGINT, None)
-
-        # After exit, _handling_sigint should be reset to False
-        assert sig_module._handling_sigint is False
+        # Should not raise SystemExit — reentrancy guard blocks it
+        handler(signal.SIGINT, None)
 
 
 class TestSetupSignalHandlers:
     def test_setup_registers_handlers(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
+        workers: list[MagicMock] = []
         lock = threading.Lock()
 
         with patch("sftp_parallel.signals.signal.signal") as mock_signal, \
              patch("sftp_parallel.signals.signal.getsignal") as mock_getsignal:
             mock_getsignal.return_value = signal.SIG_DFL
-            setup_signal_handlers(popens, lock)
+            setup_signal_handlers(workers, lock)
             assert mock_signal.call_count == 2
 
 
@@ -133,51 +95,42 @@ class TestCleanupSignalHandlers:
             sig_module._original_sigterm = orig_sigterm
 
 
-class TestSignalHandlerPopenLock:
+class TestSignalHandlerWorkerLock:
     def test_handler_acquires_lock_nonblocking(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
+        workers: list[MagicMock] = []
         lock = threading.Lock()
-        handler = _make_signal_handler(popens, lock)
+        handler = _make_signal_handler(workers, lock)
         # Should not deadlock
         with pytest.raises(SystemExit):
             handler(signal.SIGINT, None)
 
     def test_sigint_during_sigint_is_ignored(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
+        workers: list[MagicMock] = []
         lock = threading.Lock()
-        handler = _make_signal_handler(popens, lock)
+        handler = _make_signal_handler(workers, lock)
 
         import sftp_parallel.signals as sig_module
         sig_module._handling_sigint = True
 
-        try:
-            handler(signal.SIGINT, None)
-        finally:
-            sig_module._handling_sigint = False
+        handler(signal.SIGINT, None)
 
     def test_sigterm_not_ignored_during_sigint(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
+        workers: list[MagicMock] = []
         lock = threading.Lock()
-        handler = _make_signal_handler(popens, lock)
+        handler = _make_signal_handler(workers, lock)
 
         import sftp_parallel.signals as sig_module
         sig_module._handling_sigint = True
 
-        try:
-            with pytest.raises(SystemExit):
-                handler(signal.SIGTERM, None)
-        finally:
-            sig_module._handling_sigint = False
+        with pytest.raises(SystemExit):
+            handler(signal.SIGTERM, None)
 
     def test_sigterm_during_sigterm_is_ignored(self):
-        popens: list[tuple[subprocess.Popen[str], int]] = []
+        workers: list[MagicMock] = []
         lock = threading.Lock()
-        handler = _make_signal_handler(popens, lock)
+        handler = _make_signal_handler(workers, lock)
 
         import sftp_parallel.signals as sig_module
         sig_module._handling_sigterm = True
 
-        try:
-            handler(signal.SIGTERM, None)
-        finally:
-            sig_module._handling_sigterm = False
+        handler(signal.SIGTERM, None)

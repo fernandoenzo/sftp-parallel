@@ -1,13 +1,10 @@
 """Tests for sftp_parallel.batch."""
 
-from __future__ import annotations
-
 import warnings
 
 import pytest
 
 from sftp_parallel.batch import (
-    build_batch_commands,
     sftp_escape,
     validate_filename,
     validate_host,
@@ -189,46 +186,4 @@ class TestSftpEscape:
         assert sftp_escape('say "hello"') == 'say \\"hello\\"'
 
 
-# --- build_batch_commands ---
 
-
-class TestBuildBatchCommands:
-    def test_single_file(self):
-        result = build_batch_commands("/remote", ["/local/file.txt"])
-        assert 'cd "/remote"' in result
-        assert 'put -f "/local/file.txt"' in result
-        assert result.endswith("bye")
-
-    def test_multiple_files(self):
-        result = build_batch_commands("/remote", ["/local/a.txt", "/local/b.txt"])
-        assert result.count("put -f") == 2
-
-    def test_newline_in_remote_dir_rejected(self):
-        with pytest.raises(ValueError, match="contains"):
-            build_batch_commands("/tmp/a\nb", ["/local/f.txt"])
-
-    def test_newline_in_file_path_rejected(self):
-        with pytest.raises(ValueError, match="contains"):
-            build_batch_commands("/remote", ["/tmp/a\nb/f.txt"])
-
-    def test_nul_in_remote_dir_rejected(self):
-        with pytest.raises(ValueError, match="contains"):
-            build_batch_commands("/tmp/a\x00b", ["/local/f.txt"])
-
-    def test_nul_in_file_path_rejected(self):
-        with pytest.raises(ValueError, match="contains"):
-            build_batch_commands("/remote", ["/tmp/a\x00b/f.txt"])
-
-    def test_escape_needed(self):
-        result = build_batch_commands('/remote "dir"', ['/local/a\\"file'])
-        assert '\\"' in result or '\\\\' in result
-
-
-class TestBuildBatchCommandsMultiSource:
-    def test_three_files(self):
-        result = build_batch_commands("/remote", ["/a", "/b", "/c"])
-        lines = result.split("\n")
-        assert lines[0].startswith("cd")
-        assert lines[-1] == "bye"
-        put_lines = [line for line in lines if line.startswith("put")]
-        assert len(put_lines) == 3

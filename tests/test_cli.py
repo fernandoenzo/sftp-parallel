@@ -362,3 +362,71 @@ class TestSymlinkToSpecialFile:
 
         result = resolve_file_patterns(["link_to_real"], cwd=tmp_path)
         assert len(result) == 1
+
+    def test_broken_symlink_skipped(self, tmp_path):
+        """A broken symlink (target doesn't exist) should be skipped with warning."""
+        link_path = tmp_path / "dangling_link"
+        link_path.symlink_to("/nonexistent/target")
+
+        result = resolve_file_patterns([], cwd=tmp_path)
+        assert len(result) == 0
+
+    def test_symlink_to_directory_skipped(self, tmp_path):
+        """A symlink pointing to a directory should be silently skipped."""
+        real_dir = tmp_path / "real_dir"
+        real_dir.mkdir()
+        link_path = tmp_path / "link_to_dir"
+        link_path.symlink_to(real_dir)
+
+        result = resolve_file_patterns([], cwd=tmp_path)
+        names = [p.name for p in result]
+        assert "link_to_dir" not in names
+        assert "real_dir" not in names
+
+    def test_symlink_to_directory_silent_skip(self, tmp_path, capsys):
+        """A symlink pointing to a directory should NOT produce a warning."""
+        real_dir = tmp_path / "real_dir"
+        real_dir.mkdir()
+        link_path = tmp_path / "link_to_dir"
+        link_path.symlink_to(real_dir)
+
+        resolve_file_patterns([], cwd=tmp_path)
+        output = capsys.readouterr().out
+        assert "link_to_dir" not in output
+
+    def test_broken_symlink_single_warning_literal(self, tmp_path, capsys):
+        """A broken symlink as literal pattern should produce exactly one warning."""
+        link_path = tmp_path / "dangling"
+        link_path.symlink_to("/nonexistent/target")
+
+        resolve_file_patterns(["dangling"], cwd=tmp_path)
+        output = capsys.readouterr().out
+        warning_count = output.count("dangling")
+        assert warning_count == 1, f"Expected 1 warning for 'dangling', got {warning_count}: {output!r}"
+
+    def test_symlink_to_file_returns_resolved_path(self, tmp_path):
+        """A symlink to a regular file should return the resolved (canonical) path."""
+        real_file = tmp_path / "real.txt"
+        real_file.write_text("content")
+        link_path = tmp_path / "link_to_real"
+        link_path.symlink_to(real_file)
+
+        result = resolve_file_patterns(["link_to_real"], cwd=tmp_path)
+        assert len(result) == 1
+        assert result[0] == real_file.resolve()
+
+    def test_symlink_dedup_same_target(self, tmp_path):
+        """Two symlinks to the same file resolve to the same canonical path,
+        allowing dict.fromkeys dedup at the caller level."""
+        real_file = tmp_path / "target.txt"
+        real_file.write_text("content")
+        link_a = tmp_path / "link_a"
+        link_b = tmp_path / "link_b"
+        link_a.symlink_to(real_file)
+        link_b.symlink_to(real_file)
+
+        result = resolve_file_patterns(["link_a", "link_b"], cwd=tmp_path)
+        assert len(result) == 2  # both symlinks produce entries
+        assert result[0] == result[1]  # but they resolve to the same path
+        deduped = list(dict.fromkeys(str(p) for p in result))
+        assert len(deduped) == 1  # caller-level dedup works

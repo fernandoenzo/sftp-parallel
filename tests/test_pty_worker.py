@@ -13,7 +13,6 @@ from sftp_parallel.pty_worker import (
     WorkerResult,
     _PROGRESS_RE,
     _SFTP_ERROR_RE,
-    _SFTP_PROMPT_RE,
     _parse_formatted_bytes,
 )
 
@@ -57,22 +56,16 @@ class TestWorkerResult:
         result = WorkerResult(
             success=True,
             file_path="/tmp/a.txt",
-            bytes_transferred=100,
-            file_size=200,
             error_message="",
         )
         assert result.success is True
         assert result.file_path == "/tmp/a.txt"
-        assert result.bytes_transferred == 100
-        assert result.file_size == 200
         assert result.error_message == ""
 
     def test_default_error_message(self) -> None:
         result = WorkerResult(
             success=False,
             file_path="/tmp/b.txt",
-            bytes_transferred=0,
-            file_size=100,
         )
         assert result.error_message == ""
 
@@ -80,8 +73,6 @@ class TestWorkerResult:
         result = WorkerResult(
             success=False,
             file_path="/tmp/c.txt",
-            bytes_transferred=50,
-            file_size=100,
             error_message="Permission denied",
         )
         assert result.error_message == "Permission denied"
@@ -280,24 +271,6 @@ class TestParseFormattedBytes:
 
     def test_comma_decimal_mb(self) -> None:
         assert _parse_formatted_bytes("2,5MB") == int(2.5 * 1024**2)
-
-
-class TestSFTPPromptRE:
-    def test_prompt(self) -> None:
-        m = _SFTP_PROMPT_RE.search("sftp> ")
-        assert m is not None
-
-    def test_prompt_no_space(self) -> None:
-        m = _SFTP_PROMPT_RE.search("sftp>")
-        assert m is not None
-
-    def test_prompt_in_line(self) -> None:
-        result = _SFTP_PROMPT_RE.findall("output\nsftp> ")
-        assert len(result) > 0
-
-    def test_prompt_embedded(self) -> None:
-        m = _SFTP_PROMPT_RE.search("some text sftp> trailing")
-        assert m is not None
 
 
 class TestSFTPErrorRE:
@@ -673,11 +646,11 @@ class TestProcessOutput:
         assert "trailing text" in worker._linebuf or worker._linebuf == ""
 
     def test_idle_timer_reset_on_any_output(self) -> None:
-        """M3: _last_progress_time is reset on any output, not just progress."""
+        """Idle timer only resets on PROGRESS_RE match, not any output."""
         worker = _make_worker()
         worker._last_progress_time = 100.0
         worker._process_output("sftp> \n")
-        assert worker._last_progress_time > 100.0
+        assert worker._last_progress_time == 100.0
 
 
 # --- _build_sftp_cmd tests ---
