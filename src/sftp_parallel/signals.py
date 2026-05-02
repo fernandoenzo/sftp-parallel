@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import signal
-import subprocess
 import sys
 import threading
 from types import FrameType
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from rich.console import Console
 
@@ -17,10 +15,8 @@ if TYPE_CHECKING:
 
 console = Console()
 
-_original_sigint: Any = None
-_original_sigterm: Any = None
-
-_SIGTERM_WAIT_SECONDS = 2
+_original_sigint: Callable[[int, FrameType | None], None] | int | None = None
+_original_sigterm: Callable[[int, FrameType | None], None] | int | None = None
 
 # NOTE: _handling_sigint and _handling_sigterm are module-level booleans
 # accessed from signal handlers. They are not protected by a lock because:
@@ -32,102 +28,6 @@ _handling_sigterm = False
 
 
 def _make_signal_handler(
-    popens: list[tuple[subprocess.Popen[str], int]],
-    popen_lock: threading.Lock,
-) -> Callable[[int, FrameType | None], None]:
-    """Create a signal handler that terminates all child Popen processes.
-
-    Parameters
-    ----------
-    popens:
-        List of ``(Popen, pgid)`` tuples.  Each process is expected to have
-        been started with ``start_new_session=True`` so that ``os.killpg``
-        can kill the entire process group.
-    popen_lock:
-        A threading lock protecting *popens* from concurrent modification.
-
-    Returns
-    -------
-    Callable[[int, FrameType | None], None]
-        A signal handler suitable for ``signal.signal()``.
-    """
-
-    def handler(signum: int, frame: FrameType | None) -> None:
-        global _handling_sigint, _handling_sigterm
-        if signum == signal.SIGINT:
-            if _handling_sigint:
-                return
-            _handling_sigint = True
-        elif signum == signal.SIGTERM:
-            if _handling_sigterm:
-                return
-            _handling_sigterm = True
-            # SIGTERM always overrides SIGINT in progress
-        try:
-            # Non-blocking acquisition is intentional: if we can't get the lock,
-            # we proceed with a possibly-stale snapshot. Workers added after the
-            # snapshot are still cleaned up by their own finally block in
-            # _upload_one_via_pty, and workers removed are harmless (terminate()
-            # is idempotent).
-            locked = popen_lock.acquire(blocking=False)
-            try:
-                snapshot = list(popens)
-            finally:
-                if locked:
-                    popen_lock.release()
-
-            for _proc, pgid in snapshot:
-                if pgid > 1:
-                    try:
-                        os.killpg(pgid, signal.SIGTERM)
-                    except (ProcessLookupError, OSError):
-                        pass
-
-            for proc, pgid in snapshot:
-                try:
-                    proc.wait(timeout=_SIGTERM_WAIT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    if pgid > 1:
-                        try:
-                            os.killpg(pgid, signal.SIGKILL)
-                        except (ProcessLookupError, OSError):
-                            pass
-
-            console.print("[bold red]Interrupted[/bold red]")
-            sys.exit(128 + signum)
-        finally:
-            if signum == signal.SIGINT:
-                _handling_sigint = False
-            elif signum == signal.SIGTERM:
-                _handling_sigterm = False
-
-    return handler
-
-
-def setup_signal_handlers(
-    popens: list[tuple[subprocess.Popen[str], int]],
-    popen_lock: threading.Lock,
-) -> None:
-    """Register SIGINT and SIGTERM handlers that terminate child processes.
-
-    Parameters
-    ----------
-    popens:
-        List of ``(Popen, pgid)`` tuples for running SFTP processes.
-    popen_lock:
-        A threading lock protecting *popens*.
-    """
-    global _original_sigint, _original_sigterm
-
-    _original_sigint = signal.getsignal(signal.SIGINT)
-    _original_sigterm = signal.getsignal(signal.SIGTERM)
-
-    handler = _make_signal_handler(popens, popen_lock)
-    signal.signal(signal.SIGINT, handler)
-    signal.signal(signal.SIGTERM, handler)
-
-
-def _make_signal_handler_v2(
     active_workers: list[PTYWorker],
     worker_lock: threading.Lock,
 ) -> Callable[[int, FrameType | None], None]:
@@ -158,34 +58,28 @@ def _make_signal_handler_v2(
                 return
             _handling_sigterm = True
             # SIGTERM always overrides SIGINT in progress
+        # Non-blocking acquisition is intentional: if we can't get the lock,
+        # we proceed with a possibly-stale snapshot. Workers added after the
+        # snapshot are still cleaned up by their own finally block in
+        # _upload_one_via_pty, and workers removed are harmless (terminate()
+        # is idempotent).
+        locked = worker_lock.acquire(blocking=False)
         try:
-            # Non-blocking acquisition is intentional: if we can't get the lock,
-            # we proceed with a possibly-stale snapshot. Workers added after the
-            # snapshot are still cleaned up by their own finally block in
-            # _upload_one_via_pty, and workers removed are harmless (terminate()
-            # is idempotent).
-            locked = worker_lock.acquire(blocking=False)
-            try:
-                snapshot = list(active_workers)
-            finally:
-                if locked:
-                    worker_lock.release()
-
-            for worker in snapshot:
-                worker.terminate()
-
-            console.print("[bold red]Interrupted[/bold red]")
-            sys.exit(128 + signum)
+            snapshot = list(active_workers)
         finally:
-            if signum == signal.SIGINT:
-                _handling_sigint = False
-            elif signum == signal.SIGTERM:
-                _handling_sigterm = False
+            if locked:
+                worker_lock.release()
+
+        for worker in snapshot:
+            worker.terminate()
+
+        console.print("[bold red]Interrupted[/bold red]")
+        sys.exit(128 + signum)
 
     return handler
 
 
-def setup_signal_handlers_v2(
+def setup_signal_handlers(
     active_workers: list[PTYWorker],
     worker_lock: threading.Lock,
 ) -> None:
@@ -203,7 +97,7 @@ def setup_signal_handlers_v2(
     _original_sigint = signal.getsignal(signal.SIGINT)
     _original_sigterm = signal.getsignal(signal.SIGTERM)
 
-    handler = _make_signal_handler_v2(active_workers, worker_lock)
+    handler = _make_signal_handler(active_workers, worker_lock)
     signal.signal(signal.SIGINT, handler)
     signal.signal(signal.SIGTERM, handler)
 
