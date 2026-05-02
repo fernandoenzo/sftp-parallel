@@ -23,7 +23,6 @@ _console = Console()
 
 
 def _format_binary_size(size: float) -> str:
-    """Format a byte count in binary units (KiB, MiB, GiB, TiB)."""
     if size >= 1024 ** 4:
         val = size / (1024 ** 4)
         return f"{val:.2f} TiB" if not val.is_integer() else f"{val:.0f} TiB"
@@ -40,7 +39,6 @@ def _format_binary_size(size: float) -> str:
 
 
 class _BinaryDownloadColumn(ProgressColumn):
-    """Download column that formats sizes in binary units (KiB, MiB, GiB, TiB)."""
 
     def render(self, task: Task) -> Text:
         completed = task.completed
@@ -53,7 +51,6 @@ class _BinaryDownloadColumn(ProgressColumn):
 
 
 class _StatusColumn(ProgressColumn):
-    """Spinner while running, ✓/✗ when finished."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -65,51 +62,23 @@ class _StatusColumn(ProgressColumn):
             if desc.startswith("[green]") or desc.startswith("[bold green]"):
                 return Text("✓", style="bold green")
             return Text("✗", style="bold red")
-        return self._spinner.render(task)  # type: ignore[return-value]
+        return Text(str(self._spinner.render(task)))
 
 
 @dataclass
 class FileProgress:
-    """Tracks byte-level progress for a single file upload."""
-
     file_path: str
     file_size: int
 
 
 @contextmanager
-def create_upload_progress_v2(
+def create_upload_progress(
     total_files: int,
     host: str,
     remote_dir: str,
     num_workers: int = 2,
     disable: bool = False,
 ) -> Generator[Progress, None, None]:
-    """Create a Rich progress bar with per-file byte-level progress tracking.
-
-    Context manager that yields a ``Progress`` instance.  Per-file sub-tasks
-    (added via :func:`add_worker_task`) show byte-level transfer progress for
-    each individual file with human-readable size, speed, and percentage
-    columns.  The overall file count is tracked by the caller — this function
-    no longer manages an overall task.
-
-    Parameters
-    ----------
-    total_files:
-        Total number of files to upload (informational, not used for a task).
-    host:
-        Remote host specification (e.g. ``user@host``).
-    remote_dir:
-        Remote directory path.
-    num_workers:
-        Number of parallel workers (shown in description).
-    disable:
-        If ``True``, progress bar is disabled.
-
-    Yields
-    ------
-    Progress
-        The Rich Progress instance.
-    """
     worker_suffix = f" ({num_workers} worker{'s' if num_workers != 1 else ''})" if num_workers > 1 else ""
     header = (
         f"Uploading {total_files} file"
@@ -132,89 +101,32 @@ def create_upload_progress_v2(
         yield progress
 
 
-def add_worker_task(
+def add_file_task(
     progress: Progress,
     file_path: str,
     file_size: int,
 ) -> TaskID:
-    """Add a per-file progress bar task, initially invisible.
-
-    Creates a new task on the progress bar for an individual file transfer.
-    The task starts with ``total=file_size`` but is made invisible until
-    :func:`update_worker_progress` reports the first byte-level update.
-
-    Parameters
-    ----------
-    progress:
-        The Rich Progress instance from :func:`create_upload_progress_v2`.
-    file_path:
-        Local path of the file being uploaded.
-    file_size:
-        Size of the file in bytes.
-
-    Returns
-    -------
-    TaskID
-        The ID of the newly created task.
-    """
     basename = os.path.basename(file_path)
     task_id = progress.add_task(basename, total=file_size, visible=True)
     return task_id
 
 
-def update_worker_progress(
+def update_file_progress(
     progress: Progress,
     task_id: TaskID,
     bytes_transferred: int,
     file_progress: FileProgress,
 ) -> None:
-    """Update byte-level progress on a per-file task.
-
-    Updates the task's completed bytes on the progress bar and syncs
-    the :class:`FileProgress` dataclass.
-
-    Parameters
-    ----------
-    progress:
-        The Rich Progress instance from :func:`create_upload_progress_v2`.
-    task_id:
-        The task ID from :func:`add_worker_task`.
-    bytes_transferred:
-        Number of bytes transferred so far.
-    file_progress:
-        The :class:`FileProgress` instance tracking this file's state.
-    """
     progress.update(task_id, completed=bytes_transferred)
 
 
-def complete_worker_task(
+def complete_file_task(
     progress: Progress,
     task_id: TaskID,
     file_progress: FileProgress,
     success: bool,
     elapsed: float,
 ) -> None:
-    """Mark a per-file task as complete.
-
-    On success, updates to 100%%, shows a green description with elapsed
-    time, and stops the task via :meth:`~rich.progress.Progress.stop_task`.
-    On failure, shows a red description and stops the task.
-    The calling code is responsible for printing per-file summaries after
-    the Live display closes.
-
-    Parameters
-    ----------
-    progress:
-        The Rich Progress instance from :func:`create_upload_progress_v2`.
-    task_id:
-        The per-file task ID from :func:`add_worker_task`.
-    file_progress:
-        The :class:`FileProgress` instance tracking this file's state.
-    success:
-        ``True`` if the upload succeeded, ``False`` otherwise.
-    elapsed:
-        Elapsed time in seconds for this file upload.
-    """
     if success:
         progress.update(
             task_id,
