@@ -29,8 +29,7 @@ src/sftp_parallel/
 ├── pty_worker.py    # PTYWorker class, WorkerResult dataclass,
 │                    # _PROGRESS_RE, _SFTP_PROMPT_RE, _SFTP_ERROR_RE,
 │                    # reader/writer threads, idle timeout
-├── signals.py       # setup_signal_handlers() (v1, Popen-based),
-│                    # setup_signal_handlers_v2() (v2, PTYWorker-based),
+├── signals.py       # _make_signal_handler(), setup_signal_handlers(),
 │                    # cleanup_signal_handlers()
 └── utils.py         # (currently empty)
 
