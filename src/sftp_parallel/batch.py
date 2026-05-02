@@ -1,7 +1,5 @@
 """Batch command generation and input validation."""
 
-from __future__ import annotations
-
 import os
 import unicodedata
 import warnings
@@ -10,6 +8,7 @@ _MAX_FILENAME_LENGTH = 255
 DEFAULT_TIMEOUT = 10
 MIN_TRANSFER_RATE = 256 * 1024
 CONNECTION_OVERHEAD = 10
+DEFAULT_IDLE_TIMEOUT = 120
 
 
 def validate_host(host: str) -> None:
@@ -154,7 +153,7 @@ def sftp_escape(path: str) -> str:
     return escaped.replace('"', '\\"')
 
 
-def sftp_escape_interactive(path: str) -> str:
+def _escape_interactive(path: str) -> str:
     """Escape a path for use in interactive SFTP commands (backslash escaping).
 
     Escapes spaces, backslashes, double quotes, and single quotes with
@@ -189,58 +188,13 @@ def _validate_sftp_path(path: str, label: str = "path") -> None:
             )
 
 
-def build_batch_commands(remote_dir: str, file_paths: list[str]) -> str:
-    """Generate SFTP batch commands for uploading files.
-
-    Produces a newline-separated string of SFTP commands: ``cd`` into
-    *remote_dir*, then ``put -f`` each file, then ``bye``.
-
-    Parameters
-    ----------
-    remote_dir:
-        Remote directory path to upload files to.
-    file_paths:
-        List of local file paths (absolute or relative) to upload.
-
-    Returns
-    -------
-    str
-        Newline-separated SFTP batch commands.
-
-    Raises
-    ------
-    ValueError
-        If any file path or the remote directory contains control
-        characters that would break the SFTP batch protocol.
-
-    Note
-    ----
-    This function does **not** validate *remote_dir* — callers are
-    responsible for calling :func:`validate_remote_dir` separately.
-    """
-    _validate_sftp_path(remote_dir, "remote directory")
-    for fp in file_paths:
-        _validate_sftp_path(fp, "file path")
-
-    commands: list[str] = []
-    commands.append(f'cd "{sftp_escape(remote_dir)}"')
-
-    for file_path in file_paths:
-        escaped_local = sftp_escape(file_path)
-        commands.append(f'put -f "{escaped_local}"')
-
-    commands.append("bye")
-    return "\n".join(commands)
-
-
 def build_interactive_commands(remote_dir: str, file_path: str) -> list[str]:
     """Generate SFTP commands for interactive mode (one file per session).
 
-    Unlike :func:`build_batch_commands`, this returns a list of individual
-    commands (not a single string) because they are sent one-by-one via the
+    Returns a list of individual commands (not a single string) because they are sent one-by-one via the
     PTY writer thread after each ``sftp>`` prompt.
 
-    Paths are escaped with :func:`sftp_escape_interactive` (backslash-based)
+    Paths are escaped with :func:`_escape_interactive` (backslash-based)
     rather than :func:`sftp_escape` (double-quote-based) because interactive
     SFTP does not wrap arguments in double quotes.
 
@@ -265,7 +219,7 @@ def build_interactive_commands(remote_dir: str, file_path: str) -> list[str]:
     _validate_sftp_path(file_path, "file path")
 
     return [
-        f"cd {sftp_escape_interactive(remote_dir)}",
-        f"put -f {sftp_escape_interactive(file_path)}",
+        f"cd {_escape_interactive(remote_dir)}",
+        f"put -f {_escape_interactive(file_path)}",
         "bye",
     ]
