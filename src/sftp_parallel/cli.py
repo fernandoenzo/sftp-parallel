@@ -1,7 +1,5 @@
 """CLI module for sftp-parallel — flat interface with named flags."""
 
-from __future__ import annotations
-
 import argparse
 import os
 import sys
@@ -35,6 +33,33 @@ from sftp_parallel.verify import compute_local_checksum, compute_remote_checksum
 console = Console()
 
 
+def _resolve_one(path: Path) -> Path | None:
+    """Accept regular files and symlinks to regular files; skip everything else.
+
+    Returns a resolved Path (via ``.resolve()``) for accepted files, ensuring
+    symlink deduplication works correctly at the caller level.
+
+    - Regular file → return resolved path (after filename validation)
+    - Symlink to regular file → return resolved path (is_file follows symlinks)
+    - Symlink to directory → silent None (no warning)
+    - Symlink to special/broken → warning + None
+    - Directory or nonexistent → silent None (caller decides on warning)
+    """
+    if path.is_file():  # follows symlinks → True for symlink→file
+        if not validate_filename(path.name):
+            console.print(f"[yellow]Skipping unsafe filename:[/yellow] {path.name}")
+            return None
+        return path.resolve()
+    if path.is_symlink():  # not a file → broken, dir, or special
+        if path.is_dir():  # symlink → directory: silent skip
+            return None
+        # symlink → broken or special (FIFO, socket, etc.)
+        console.print(f"[yellow]Skipping symlink to non-regular file:[/yellow] {path.name}")
+        return None
+    # regular dir or nonexistent → silent skip (caller decides whether to warn)
+    return None
+
+
 def resolve_file_patterns(
     patterns: list[str],
     cwd: Path | None = None,
@@ -61,81 +86,20 @@ def resolve_file_patterns(
 
     if not patterns:
         for entry in base.iterdir():
-            if entry.is_symlink():
-                target = os.path.realpath(entry)
-                if not os.path.isfile(target):
-                    console.print(
-                        f"[yellow]Skipping symlink to non-regular file:[/yellow] {entry.name}"
-                    )
-                    continue
-                name = entry.name
-                if validate_filename(name):
-                    result.append(entry.resolve())
-                else:
-                    console.print(f"[yellow]Skipping unsafe filename:[/yellow] {name}")
-            elif entry.is_dir():
-                continue
-            elif entry.is_file():
-                name = entry.name
-                if validate_filename(name):
-                    result.append(entry.resolve())
-                else:
-                    console.print(f"[yellow]Skipping unsafe filename:[/yellow] {name}")
+            path = _resolve_one(entry)
+            if path is not None:
+                result.append(path)
     else:
         for pattern in patterns:
-            resolved = (base / pattern).resolve()
-            original = base / pattern
-            if original.is_symlink():
-                target = os.path.realpath(original)
-                if os.path.isfile(target):
-                    name = Path(pattern).name
-                    if validate_filename(name):
-                        result.append(resolved)
-                    else:
-                        console.print(
-                            f"[yellow]Skipping unsafe filename:[/yellow] {name}"
-                        )
-                else:
-                    console.print(
-                        f"[yellow]Skipping symlink to non-regular file:[/yellow] {Path(pattern).name}"
-                    )
-            elif resolved.is_dir():
-                continue
-            elif resolved.is_file():
-                name = Path(pattern).name
-                if validate_filename(name):
-                    result.append(resolved)
-                else:
-                    console.print(
-                        f"[yellow]Skipping unsafe filename:[/yellow] {name}"
-                    )
+            path = _resolve_one(base / pattern)
+            if path is not None:
+                result.append(path)
             elif any(ch in pattern for ch in ("*", "?", "[")):
                 for entry in base.glob(pattern):
-                    if entry.is_symlink():
-                        target = os.path.realpath(entry)
-                        if not os.path.isfile(target):
-                            console.print(
-                                f"[yellow]Skipping symlink to non-regular file:[/yellow] {entry.name}"
-                            )
-                            continue
-                        name = entry.name
-                        if validate_filename(name):
-                            result.append(entry.resolve())
-                        else:
-                            console.print(
-                                f"[yellow]Skipping unsafe filename:[/yellow] {name}"
-                            )
-                    elif entry.is_dir():
-                        continue
-                    elif entry.is_file():
-                        name = entry.name
-                        if validate_filename(name):
-                            result.append(entry.resolve())
-                        else:
-                            console.print(
-                                f"[yellow]Skipping unsafe filename:[/yellow] {name}"
-                            )
-            else:
+                    resolved = _resolve_one(entry)
+                    if resolved is not None:
+                        result.append(resolved)
+            elif not (base / pattern).exists() and not (base / pattern).is_symlink():
                 console.print(
                     f"[yellow]Warning: file not found:[/yellow] {pattern}"
                 )
@@ -346,44 +310,31 @@ def _handle_upload(args: argparse.Namespace) -> None:
 
     # 8. Upload with progress
     total_files = len(file_paths_str)
-    results: list[tuple[str, bool, float]] = []
     with create_upload_progress_v2(
         total_files, args.server, remote_dir,
         num_workers=min(args.threads, total_files),
         disable=args.no_progress,
     ) as progress:
-        # Map of file paths to (Rich TaskID, FileProgress)
-        task_map: dict[str, tuple[TaskID, FileProgress]] = {}
+        # Map of file paths to (Rich TaskID, FileProgress, start_time)
+        task_map: dict[str, tuple[TaskID, FileProgress, float]] = {}
         task_map_lock = threading.Lock()
-        files_completed = 0
-        files_failed = 0
-
-        # Track when each file's upload began for elapsed-time display
-        file_start_times: dict[str, float] = {}
 
         def progress_callback(file_path: str, bytes_transferred: int, total_bytes: int) -> None:
             with task_map_lock:
                 if file_path not in task_map:
                     task_id = add_worker_task(progress, file_path, max(total_bytes, 1))
                     fp = FileProgress(file_path=file_path, file_size=max(total_bytes, 1))
-                    task_map[file_path] = (task_id, fp)
-                    file_start_times[file_path] = time.monotonic()
-                task_id, fp = task_map[file_path]
+                    task_map[file_path] = (task_id, fp, time.monotonic())
+                task_id, fp, _ = task_map[file_path]
             update_worker_progress(progress, task_id, bytes_transferred, fp)
 
         def completion_callback(file_path: str, success: bool) -> None:
-            nonlocal files_completed, files_failed
-            elapsed = time.monotonic() - file_start_times.get(file_path, time.monotonic())
             with task_map_lock:
                 if file_path in task_map:
-                    task_id, fp = task_map[file_path]
+                    task_id, fp, start_time = task_map[file_path]
+                    elapsed = time.monotonic() - start_time
                     complete_worker_task(progress, task_id, fp, success, elapsed)
                     del task_map[file_path]
-            results.append((os.path.basename(file_path), success, elapsed))
-            if success:
-                files_completed += 1
-            else:
-                files_failed += 1
 
         all_success, failed_count = upload_files(
             args.server,
@@ -397,10 +348,10 @@ def _handle_upload(args: argparse.Namespace) -> None:
         )
 
     if total_files > 1:
-        if files_failed == 0:
-            console.print(f"[bold green]Success[/bold green] — {files_completed}/{total_files} files uploaded")
+        if failed_count == 0:
+            console.print(f"[bold green]Success[/bold green] — {total_files}/{total_files} files uploaded")
         else:
-            console.print(f"[bold red]Failed[/bold red] — {files_failed}/{total_files} files failed, {files_completed} succeeded")
+            console.print(f"[bold red]Failed[/bold red] — {failed_count}/{total_files} files failed, {total_files - failed_count} succeeded")
 
     # 10. Report result + optional verification
     if args.verify:
@@ -458,10 +409,11 @@ def _handle_upload(args: argparse.Namespace) -> None:
             console.print("[bold green]Success[/bold green]")
         sys.exit(0)
     else:
-        console.print(
-            f"[bold red]Failed:[/bold red] {failed_count} file"
-            f"{'s' if failed_count != 1 else ''} failed"
-        )
+        if total_files <= 1:
+            console.print(
+                f"[bold red]Failed:[/bold red] {failed_count} file"
+                f"{'s' if failed_count != 1 else ''} failed"
+            )
         sys.exit(74)
 
 
