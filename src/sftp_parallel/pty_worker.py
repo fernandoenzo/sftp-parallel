@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sftp_parallel.batch import (
+    DEFAULT_IDLE_TIMEOUT,
     DEFAULT_TIMEOUT,
     build_interactive_commands,
     validate_host,
@@ -48,7 +49,7 @@ _PROGRESS_RE = re.compile(
     r"--:\s*--\s+ETA"
 )
 
-_SFTP_PROMPT_RE = re.compile(r"sftp>")
+
 
 _UNIT_MULTIPLIERS: dict[str, int] = {
     "B": 1,
@@ -95,8 +96,10 @@ _SFTP_ERROR_RE = re.compile(
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
-_SFTP_SAFE_LINE_RE = re.compile(
-    r"^(?:cd\s|put\s|bye|lcd\s|lls\s|l(?:l(?=s)|m(?:kdir|dir)|(?=[a-z]))|!(?=!)|Uploading\s|Remote\s+working|sftp>|Connected\s)"
+_SFTP_SAFE_PREFIXES = (
+    "cd ", "put ", "bye", "lcd ", "lls ", "lpwd", "pwd ",
+    "lmkdir ", "lmdir ", "ls ", "!!",
+    "Uploading ", "Remote working", "sftp>", "Connected ",
 )
 
 
@@ -106,8 +109,6 @@ class WorkerResult:
 
     success: bool
     file_path: str
-    bytes_transferred: int
-    file_size: int
     error_message: str = ""
 
 
@@ -149,7 +150,7 @@ class PTYWorker:
         remote_dir: str,
         port: int = 22,
         connect_timeout: int = DEFAULT_TIMEOUT,
-        idle_timeout: int = 120,
+        idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
         prompt_timeout: int = 30,
         progress_callback: Callable[[str, int, int], None] | None = None,
     ) -> None:
@@ -201,16 +202,12 @@ class PTYWorker:
             return WorkerResult(
                 success=False,
                 file_path=self.file_path,
-                bytes_transferred=0,
-                file_size=self._file_size,
                 error_message="sftp binary not found",
             )
         except OSError as exc:
             return WorkerResult(
                 success=False,
                 file_path=self.file_path,
-                bytes_transferred=0,
-                file_size=self._file_size,
                 error_message=f"Failed to spawn sftp process: {exc}",
             )
 
@@ -221,12 +218,9 @@ class PTYWorker:
             self._kill_process()
             with self._lock:
                 err = self._error_message or str(exc)
-                bt = self._bytes_transferred
             return WorkerResult(
                 success=False,
                 file_path=self.file_path,
-                bytes_transferred=bt,
-                file_size=self._file_size,
                 error_message=err,
             )
         finally:
@@ -242,13 +236,10 @@ class PTYWorker:
             else:
                 success = self._prompt_count >= 3
             err = self._error_message
-            bt = self._bytes_transferred
 
         return WorkerResult(
             success=success,
             file_path=self.file_path,
-            bytes_transferred=bt,
-            file_size=self._file_size,
             error_message=err,
         )
 
@@ -401,27 +392,20 @@ class PTYWorker:
                 break
 
             saw_output = True
-            with self._lock:
-                self._last_progress_time = time.monotonic()
             encoding = locale.getpreferredencoding(False) or "utf-8"
             text = data.decode(encoding, errors="replace")
             self._process_output(text)
 
         self._stop_event.set()
 
-    def _process_output(self, text: str) -> None:
-        """Process raw text from the PTY, splitting on ``\\r`` and ``\\n``.
+    def _split_segments(self, text: str) -> tuple[list[str], str]:
+        """Split PTY output into line segments, handling overflow and \\r/\\n delimiters.
 
-        Progress lines use ``\\r`` to overwrite in place.  Prompt and error
-        lines use ``\\n``.
-
-        The interactive ``sftp>`` prompt is NOT terminated by ``\\r`` or
-        ``\\n`` — it waits for user input on the same line.  Detect it in
-        the line buffer even without a line terminator.
+        Returns (segments, remaining_linebuf) where segments are complete
+        lines to parse and remaining_linebuf is the unparsed remainder.
         """
         self._linebuf += text
 
-        # Prevent unbounded linebuf growth
         if len(self._linebuf) > 8192:
             logger.warning("Line buffer overflow for %s, truncating", self.file_path)
             self._linebuf = self._linebuf[-4096:]
@@ -429,28 +413,34 @@ class PTYWorker:
         segments = re.split(r"[\r\n]+", self._linebuf)
 
         if text and text[-1] not in ("\r", "\n"):
-            self._linebuf = segments[-1]
+            remaining = segments[-1]
             segments = segments[:-1]
         else:
-            self._linebuf = ""
+            remaining = ""
+
+        return segments, remaining
+
+    def _check_pending_prompt(self) -> None:
+        """Check if the line buffer contains an sftp> prompt and process it."""
+        if not self._linebuf:
+            return
+        stripped = _ANSI_ESCAPE_RE.sub("", self._linebuf).strip()
+        if "sftp>" in stripped:
+            idx = self._linebuf.find("sftp>")
+            prompt_part = self._linebuf[: idx + 5]
+            trailing = self._linebuf[idx + 5 :]
+            self._parse_line(prompt_part)
+            self._linebuf = trailing
+
+    def _process_output(self, text: str) -> None:
+        """Process raw text from the PTY, splitting on ``\\r`` and ``\\n``."""
+        segments, remaining = self._split_segments(text)
+        self._linebuf = remaining
 
         for segment in segments:
             self._parse_line(segment)
 
-        # Reset idle timer on any output
-        with self._lock:
-            self._last_progress_time = time.monotonic()
-
-        # Interactive sftp prompts are NOT newline-terminated. Check if the
-        # remaining buffer contains a prompt and process it immediately.
-        if self._linebuf:
-            stripped = _ANSI_ESCAPE_RE.sub("", self._linebuf).strip()
-            if "sftp>" in stripped:
-                idx = self._linebuf.find("sftp>")
-                prompt_part = self._linebuf[: idx + 5]
-                trailing = self._linebuf[idx + 5 :]
-                self._parse_line(prompt_part)
-                self._linebuf = trailing  # preserve trailing text for next iteration
+        self._check_pending_prompt()
 
     def _parse_line(self, line: str) -> None:
         """Parse a single output line from the SFTP process.
@@ -472,26 +462,26 @@ class PTYWorker:
         match = _PROGRESS_RE.search(line)
         if match:
             bytes_str = match.group(2)
+            transferred = 0
             if bytes_str is not None:
                 try:
                     transferred = _parse_formatted_bytes(bytes_str)
                 except (ValueError, OverflowError):
                     transferred = 0
-                if transferred >= self._bytes_transferred:
-                    with self._lock:
-                        self._bytes_transferred = transferred
-                        self._last_progress_time = time.monotonic()
-                else:
-                    with self._lock:
-                        self._last_progress_time = time.monotonic()
+            if transferred >= self._bytes_transferred:
+                with self._lock:
+                    self._bytes_transferred = transferred
+                    self._last_progress_time = time.monotonic()
+                    bt = self._bytes_transferred
             else:
+                bt = self._bytes_transferred
                 with self._lock:
                     self._last_progress_time = time.monotonic()
 
             if self.progress_callback is not None:
                 try:
                     self.progress_callback(
-                        self.file_path, self._bytes_transferred, self._file_size
+                        self.file_path, bt, self._file_size
                     )
                 except Exception:
                     logger.debug("Progress callback failed for %s", self.file_path, exc_info=True)
@@ -512,7 +502,7 @@ class PTYWorker:
 
         # Command echoes from our own writer thread — never error lines.
         # The PTY echoes back what we type (e.g. "put -f /path/Error.log").
-        if _SFTP_SAFE_LINE_RE.match(line):
+        if any(line.startswith(prefix) for prefix in _SFTP_SAFE_PREFIXES):
             return
 
         if _SFTP_ERROR_RE.search(line):
@@ -571,45 +561,45 @@ class PTYWorker:
     def _kill_process(self) -> None:
         """Kill the SFTP process group and signal shutdown.
 
-        Sends ``SIGTERM`` to the process group.  If the process is still
-        alive after 2 seconds, escalates to ``SIGKILL``.
+        Sends SIGTERM to the process group.  If the process is still
+        alive after 2 seconds, escalates to SIGKILL.
 
         Because :func:`pty.fork` creates a new session via
         :func:`os.setsid`, the PGID equals the child PID.
         """
         with self._lock:
             self._stop_event.set()
+            self._prompt_event.set()  # unblock writer thread on error
 
             if self.pid <= 0:
                 return
+            pid = self.pid
 
-            pgid = self.pid  # PGID == PID after setsid()
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
 
+        for _ in range(10):
             try:
-                os.killpg(pgid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-
-            for _ in range(10):
-                try:
-                    pid_, status = os.waitpid(self.pid, os.WNOHANG)
-                    if pid_ != 0:
-                        self.pid = 0
-                        return
-                except ChildProcessError:
-                    self.pid = 0
-                    return
-                time.sleep(0.2)
-
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                pass
-
-            try:
-                os.waitpid(self.pid, 0)
+                pid_, _status = os.waitpid(pid, os.WNOHANG)
+                if pid_ != 0:
+                    break
             except ChildProcessError:
-                pass
+                break
+            time.sleep(0.2)
+
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
+        with self._lock:
             self.pid = 0
 
     def _cleanup(self) -> None:
