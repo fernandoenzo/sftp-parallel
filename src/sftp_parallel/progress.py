@@ -1,11 +1,9 @@
 """Rich progress bar for parallel SFTP uploads."""
 
-from __future__ import annotations
-
 import os
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.progress import (
@@ -21,9 +19,6 @@ from rich.progress import (
 )
 from rich.text import Text
 
-if TYPE_CHECKING:
-    from collections.abc import Generator
-
 _console = Console()
 
 
@@ -31,16 +26,16 @@ def _format_binary_size(size: float) -> str:
     """Format a byte count in binary units (KiB, MiB, GiB, TiB)."""
     if size >= 1024 ** 4:
         val = size / (1024 ** 4)
-        return f"{val:.2f} TiB" if val % 1 else f"{val:.0f} TiB"
+        return f"{val:.2f} TiB" if not val.is_integer() else f"{val:.0f} TiB"
     if size >= 1024 ** 3:
         val = size / (1024 ** 3)
-        return f"{val:.2f} GiB" if val % 1 else f"{val:.0f} GiB"
+        return f"{val:.2f} GiB" if not val.is_integer() else f"{val:.0f} GiB"
     if size >= 1024 ** 2:
         val = size / (1024 ** 2)
-        return f"{val:.2f} MiB" if val % 1 else f"{val:.0f} MiB"
+        return f"{val:.2f} MiB" if not val.is_integer() else f"{val:.0f} MiB"
     if size >= 1024:
         val = size / 1024
-        return f"{val:.2f} KiB" if val % 1 else f"{val:.0f} KiB"
+        return f"{val:.2f} KiB" if not val.is_integer() else f"{val:.0f} KiB"
     return f"{size:.0f} B"
 
 
@@ -79,93 +74,6 @@ class FileProgress:
 
     file_path: str
     file_size: int
-    bytes_transferred: int = 0
-    last_progress_time: float = 0.0
-    completed: bool = False
-    failed: bool = False
-    got_intermediate_progress: bool = False
-
-
-@contextmanager
-def create_upload_progress(
-    total_files: int,
-    host: str,
-    remote_dir: str,
-    disable: bool = False,
-) -> Generator[tuple[Progress, TaskID], None, None]:
-    """Create a Rich progress bar for tracking SFTP upload progress.
-
-    Context manager that yields a ``(progress, task_id)`` tuple. The progress
-    bar tracks files completed (not bytes) since sftp batch mode does not
-    emit per-byte progress.
-
-    Use :func:`advance_progress` to update the progress as buckets complete.
-
-    Parameters
-    ----------
-    total_files:
-        Total number of files to upload across all buckets.
-    host:
-        Remote host specification (e.g. ``user@host``). Used in description.
-    remote_dir:
-        Remote directory path. Used in description.
-    disable:
-        If ``True``, progress bar is disabled (useful for programmatic use
-        or when output is redirected).
-
-    Yields
-    ------
-    tuple[Progress, int]
-        A ``(progress, task_id)`` pair. ``progress`` is the Rich Progress
-        instance, and ``task_id`` is the ID of the created task.
-
-    Example
-    -------
-    >>> with create_upload_progress(10, "user@host", "/remote") as (progress, task):
-    ...     # Upload files in parallel
-    ...     advance_progress(progress, task, 3)  # 3 files completed
-    ...     advance_progress(progress, task, 5)  # 5 more files completed
-    """
-    description = (
-        f"Uploading {total_files} file"
-        f"{'s' if total_files != 1 else ''} to {host}:{remote_dir}"
-    )
-
-    progress = Progress(
-        TextColumn("[progress.description]{task.description}"),
-        SpinnerColumn(),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        TextColumn("{task.completed}/{task.total}"),
-        disable=disable,
-    )
-
-    with progress:
-        task_id = progress.add_task(description, total=total_files)
-        yield progress, task_id
-
-
-def advance_progress(
-    progress: Progress,
-    task_id: TaskID,
-    filename: str,
-) -> None:
-    """Advance the upload progress bar by one file and print a checkmark.
-
-    Call this function each time a single file upload completes to update
-    the progress bar and display ``✓ filename``.
-
-    Parameters
-    ----------
-    progress:
-        The Rich Progress instance from :func:`create_upload_progress`.
-    task_id:
-        The task ID from :func:`create_upload_progress`.
-    filename:
-        Name of the file that just finished uploading.
-    """
-    _console.print(f"[bold green]✓[/bold green] {filename}")
-    progress.update(task_id, advance=1)
 
 
 @contextmanager
@@ -277,7 +185,6 @@ def update_worker_progress(
         The :class:`FileProgress` instance tracking this file's state.
     """
     progress.update(task_id, completed=bytes_transferred)
-    file_progress.bytes_transferred = bytes_transferred
 
 
 def complete_worker_task(
@@ -315,38 +222,9 @@ def complete_worker_task(
             description=f"[green]{os.path.basename(file_progress.file_path)}[/green] ({elapsed:.1f}s)",
         )
         progress.stop_task(task_id)
-        file_progress.completed = True
     else:
         progress.update(
             task_id,
             description=f"[red]{os.path.basename(file_progress.file_path)}[/red]",
         )
         progress.stop_task(task_id)
-        file_progress.failed = True
-
-
-def make_indeterminate_task(
-    progress: Progress,
-    file_path: str,
-) -> TaskID:
-    """Create an indeterminate progress task for a file with unknown size.
-
-    Useful when the file size is not yet known or when no byte-level
-    progress has been received. The task has ``total=None``, which tells
-    Rich to render a spinning/pulsing bar instead of a percentage bar.
-
-    Parameters
-    ----------
-    progress:
-        The Rich Progress instance from :func:`create_upload_progress_v2`.
-    file_path:
-        Local path of the file being uploaded.
-
-    Returns
-    -------
-    TaskID
-        The ID of the newly created indeterminate task.
-    """
-    basename = os.path.basename(file_path)
-    task_id = progress.add_task(basename, total=None)
-    return task_id
