@@ -99,7 +99,7 @@ class TestCliHostValidation:
 
 class TestPortFlag:
     def test_default_port(self):
-        with patch("sftp_parallel.cli.upload_files", return_value=(True, 0)) as mock_upload, \
+        with patch("sftp_parallel.cli.parallel_upload", return_value=(1, 0)) as mock_upload, \
              patch("sftp_parallel.cli.resolve_file_patterns") as mock_resolve:
             mock_resolve.return_value = [Path("/tmp/a.txt")]
             with pytest.raises(SystemExit):
@@ -107,7 +107,7 @@ class TestPortFlag:
             assert mock_upload.call_args[1]["port"] == 22
 
     def test_custom_port(self):
-        with patch("sftp_parallel.cli.upload_files", return_value=(True, 0)) as mock_upload, \
+        with patch("sftp_parallel.cli.parallel_upload", return_value=(1, 0)) as mock_upload, \
              patch("sftp_parallel.cli.resolve_file_patterns") as mock_resolve:
             mock_resolve.return_value = [Path("/tmp/a.txt")]
             with pytest.raises(SystemExit):
@@ -117,7 +117,7 @@ class TestPortFlag:
 
 class TestDestFlag:
     def test_default_dest(self):
-        with patch("sftp_parallel.cli.upload_files", return_value=(True, 0)) as mock_upload, \
+        with patch("sftp_parallel.cli.parallel_upload", return_value=(1, 0)) as mock_upload, \
              patch("sftp_parallel.cli.resolve_file_patterns") as mock_resolve:
             mock_resolve.return_value = [Path("/tmp/a.txt")]
             with pytest.raises(SystemExit):
@@ -125,7 +125,7 @@ class TestDestFlag:
             assert mock_upload.call_args[0][2] == "."
 
     def test_custom_dest(self):
-        with patch("sftp_parallel.cli.upload_files", return_value=(True, 0)) as mock_upload, \
+        with patch("sftp_parallel.cli.parallel_upload", return_value=(1, 0)) as mock_upload, \
              patch("sftp_parallel.cli.resolve_file_patterns") as mock_resolve:
             mock_resolve.return_value = [Path("/tmp/a.txt")]
             with pytest.raises(SystemExit):
@@ -135,7 +135,7 @@ class TestDestFlag:
 
 class TestSkipExisting:
     @patch("sftp_parallel.cli.compute_remote_checksums")
-    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.parallel_upload")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     @patch("sftp_parallel.cli.resolve_file_patterns")
     def test_skip_existing_default_dest(
@@ -143,83 +143,77 @@ class TestSkipExisting:
     ):
         mock_resolve.return_value = [Path("/tmp/a.txt")]
         mock_sizes.return_value = {"a.txt": 0}
-        mock_upload.return_value = (True, 0)
+        mock_upload.return_value = (0, 0)
         with pytest.raises(SystemExit) as exc_info:
             main(["-s", "user@host", "-f", "a.txt", "--skip-existing"])
-        # All files skipped, no verify => exit 0
         assert exc_info.value.code == 0
 
     @patch("sftp_parallel.cli.compute_remote_checksums")
-    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.parallel_upload")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     @patch("sftp_parallel.cli.resolve_file_patterns")
     def test_skip_existing_with_verify(
         self, mock_resolve, mock_sizes, mock_upload, mock_checksums
     ):
         mock_resolve.return_value = [Path("/tmp/a.txt")]
-        mock_sizes.return_value = {"a.txt": 0}  # file size matches => skip
-        mock_upload.return_value = (True, 0)
+        mock_sizes.return_value = {"a.txt": 0}
+        mock_upload.return_value = (0, 0)
         mock_checksums.return_value = {}
-        # When all files are skipped + verify, the code should reach verification
-        # But file doesn't exist on disk so it goes to need_upload
-        # The file gets OSError on stat => need_upload => gets uploaded
         with pytest.raises(SystemExit):
             main(["-s", "user@host", "-f", "a.txt", "--skip-existing", "--verify"])
 
     @patch("sftp_parallel.cli.compute_remote_checksums")
-    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.parallel_upload")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     @patch("sftp_parallel.cli.resolve_file_patterns")
     def test_skip_existing_all_matched_no_verify(
         self, mock_resolve, mock_sizes, mock_upload, mock_checksums
     ):
-        import os
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
-            tmp_path = tmp.name
+            tmp_path_obj = tmp.name
         try:
-            mock_resolve.return_value = [Path(tmp_path)]
-            mock_sizes.return_value = {os.path.basename(tmp_path): os.path.getsize(tmp_path)}
+            mock_resolve.return_value = [Path(tmp_path_obj)]
+            mock_sizes.return_value = {os.path.basename(tmp_path_obj): os.path.getsize(tmp_path_obj)}
             with pytest.raises(SystemExit) as exc_info:
-                main(["-s", "user@host", "-f", tmp_path, "--skip-existing"])
+                main(["-s", "user@host", "-f", tmp_path_obj, "--skip-existing"])
             assert exc_info.value.code == 0
             mock_upload.assert_not_called()
         finally:
-            os.unlink(tmp_path)
+            os.unlink(tmp_path_obj)
 
-    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.parallel_upload")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     @patch("sftp_parallel.cli.resolve_file_patterns")
     def test_skip_existing_sftp_failure_fallback(
         self, mock_resolve, mock_sizes, mock_upload
     ):
-        import os
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
-            tmp_path = tmp.name
+            tmp_path_obj = tmp.name
         try:
-            mock_resolve.return_value = [Path(tmp_path)]
-            mock_sizes.return_value = None  # SFTP failure
-            mock_upload.return_value = (True, 0)
+            mock_resolve.return_value = [Path(tmp_path_obj)]
+            mock_sizes.return_value = None
+            mock_upload.return_value = (1, 0)
             with pytest.raises(SystemExit) as exc_info:
-                main(["-s", "user@host", "-f", tmp_path, "--skip-existing"])
+                main(["-s", "user@host", "-f", tmp_path_obj, "--skip-existing"])
             assert exc_info.value.code == 0
             mock_upload.assert_called_once()
         finally:
-            os.unlink(tmp_path)
+            os.unlink(tmp_path_obj)
 
 
 class TestVerifyInline:
     @patch("sftp_parallel.cli.compute_local_checksum")
     @patch("sftp_parallel.cli.compute_remote_checksums")
-    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.parallel_upload")
     @patch("sftp_parallel.cli.resolve_file_patterns")
     def test_verify_ssh_failure_warning(
         self, mock_resolve, mock_upload, mock_checksums, mock_local
     ):
         mock_resolve.return_value = [Path("/tmp/a.txt")]
-        mock_upload.return_value = (True, 0)
-        mock_checksums.return_value = {}  # SSH failure => empty
+        mock_upload.return_value = (1, 0)
+        mock_checksums.return_value = {}
         with pytest.raises(SystemExit):
             main(["-s", "user@host", "-f", "a.txt", "--verify"])
 
@@ -239,90 +233,81 @@ class TestThreadsValidation:
 
 class TestUploadFailure:
     @patch("sftp_parallel.cli.resolve_file_patterns")
-    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.parallel_upload")
     def test_exit_74_on_upload_failure(self, mock_upload, mock_resolve):
         mock_resolve.return_value = [Path("/tmp/a.txt")]
-        mock_upload.return_value = (False, 1)
+        mock_upload.return_value = (0, 1)
         with pytest.raises(SystemExit) as exc_info:
             main(["-s", "user@host", "-f", "a.txt"])
         assert exc_info.value.code == 74
 
 
 class TestToctouGuard:
-    """Test that files disappearing between skip-existing and upload are handled."""
 
     @patch("sftp_parallel.cli.compute_remote_checksums")
-    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.parallel_upload")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     @patch("sftp_parallel.cli.resolve_file_patterns")
     def test_disappeared_file_is_skipped(
         self, mock_resolve, mock_sizes, mock_upload, mock_checksums
     ):
-        """A file that disappears after skip-existing check should be skipped."""
         import tempfile
 
-        # Create a real temp file so os.path.getsize works in the skip-existing block
         with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
-            tmp_path = tmp.name
+            tmp_path_obj = tmp.name
         try:
-            mock_resolve.return_value = [Path(tmp_path)]
-            mock_sizes.return_value = {}  # remote has no files => need_upload
-            mock_upload.return_value = (True, 0)
+            mock_resolve.return_value = [Path(tmp_path_obj)]
+            mock_sizes.return_value = {}
+            mock_upload.return_value = (0, 0)
 
-            # After skip-existing produces need_upload, make the file disappear
             original_getsize = os.path.getsize
 
             def failing_getsize(path: str) -> int:
-                if path == tmp_path:
+                if path == tmp_path_obj:
                     raise OSError("File disappeared")
                 return original_getsize(path)
 
             with patch("sftp_parallel.cli.os.path.getsize", side_effect=failing_getsize):
-                # The TOCTOU guard should catch the disappearing file
                 with pytest.raises(SystemExit) as exc_info:
                     main(
-                        ["-s", "user@host", "-f", tmp_path, "--skip-existing"]
+                        ["-s", "user@host", "-f", tmp_path_obj, "--skip-existing"]
                     )
                 assert exc_info.value.code == 0
-                # upload_files called but with empty file list (files removed by TOCTOU)
                 assert mock_upload.call_args[0][1] == []
         finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+            if os.path.exists(tmp_path_obj):
+                os.unlink(tmp_path_obj)
 
     @patch("sftp_parallel.cli.compute_remote_checksums")
-    @patch("sftp_parallel.cli.upload_files")
+    @patch("sftp_parallel.cli.parallel_upload")
     @patch("sftp_parallel.cli.get_remote_file_sizes")
     @patch("sftp_parallel.cli.resolve_file_patterns")
     def test_existing_file_passes_toctou(
         self, mock_resolve, mock_sizes, mock_upload, mock_checksums
     ):
-        """A file that still exists after skip-existing should pass the TOCTOU check."""
         import tempfile
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as tmp:
-            tmp_path = tmp.name
+            tmp_path_obj = tmp.name
         try:
-            mock_resolve.return_value = [Path(tmp_path)]
-            mock_sizes.return_value = {}  # remote has no files => need_upload
-            mock_upload.return_value = (True, 0)
+            mock_resolve.return_value = [Path(tmp_path_obj)]
+            mock_sizes.return_value = {}
+            mock_upload.return_value = (1, 0)
 
             with pytest.raises(SystemExit) as exc_info:
                 main(
-                    ["-s", "user@host", "-f", tmp_path, "--skip-existing"]
+                    ["-s", "user@host", "-f", tmp_path_obj, "--skip-existing"]
                 )
             assert exc_info.value.code == 0
             mock_upload.assert_called_once()
         finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+            if os.path.exists(tmp_path_obj):
+                os.unlink(tmp_path_obj)
 
 
 class TestSymlinkToSpecialFile:
-    """Test that symlinks to special files (FIFOs, etc.) are skipped."""
 
     def test_symlink_to_fifo_is_skipped(self, tmp_path):
-        """A symlink pointing to a named pipe (FIFO) should be skipped."""
         fifo_path = tmp_path / "real_fifo"
         os.mkfifo(str(fifo_path))
         link_path = tmp_path / "link_to_fifo"
@@ -333,7 +318,6 @@ class TestSymlinkToSpecialFile:
         assert "link_to_fifo" not in names
 
     def test_symlink_to_regular_file_is_included(self, tmp_path):
-        """A symlink pointing to a regular file should be included."""
         real_file = tmp_path / "real.txt"
         real_file.write_text("content")
         link_path = tmp_path / "link_to_real.txt"
@@ -344,7 +328,6 @@ class TestSymlinkToSpecialFile:
         assert "real.txt" in names or "link_to_real.txt" in names
 
     def test_symlink_to_fifo_literal_pattern_skipped(self, tmp_path):
-        """A literal symlink to FIFO provided as a pattern should be skipped."""
         fifo_path = tmp_path / "real_fifo"
         os.mkfifo(str(fifo_path))
         link_path = tmp_path / "link_to_fifo"
@@ -354,7 +337,6 @@ class TestSymlinkToSpecialFile:
         assert len(result) == 0
 
     def test_symlink_to_regular_literal_pattern_included(self, tmp_path):
-        """A literal symlink to a regular file should be included."""
         real_file = tmp_path / "real.txt"
         real_file.write_text("content")
         link_path = tmp_path / "link_to_real"
@@ -364,7 +346,6 @@ class TestSymlinkToSpecialFile:
         assert len(result) == 1
 
     def test_broken_symlink_skipped(self, tmp_path):
-        """A broken symlink (target doesn't exist) should be skipped with warning."""
         link_path = tmp_path / "dangling_link"
         link_path.symlink_to("/nonexistent/target")
 
@@ -372,7 +353,6 @@ class TestSymlinkToSpecialFile:
         assert len(result) == 0
 
     def test_symlink_to_directory_skipped(self, tmp_path):
-        """A symlink pointing to a directory should be silently skipped."""
         real_dir = tmp_path / "real_dir"
         real_dir.mkdir()
         link_path = tmp_path / "link_to_dir"
@@ -384,7 +364,6 @@ class TestSymlinkToSpecialFile:
         assert "real_dir" not in names
 
     def test_symlink_to_directory_silent_skip(self, tmp_path, capsys):
-        """A symlink pointing to a directory should NOT produce a warning."""
         real_dir = tmp_path / "real_dir"
         real_dir.mkdir()
         link_path = tmp_path / "link_to_dir"
@@ -395,7 +374,6 @@ class TestSymlinkToSpecialFile:
         assert "link_to_dir" not in output
 
     def test_broken_symlink_single_warning_literal(self, tmp_path, capsys):
-        """A broken symlink as literal pattern should produce exactly one warning."""
         link_path = tmp_path / "dangling"
         link_path.symlink_to("/nonexistent/target")
 
@@ -405,7 +383,6 @@ class TestSymlinkToSpecialFile:
         assert warning_count == 1, f"Expected 1 warning for 'dangling', got {warning_count}: {output!r}"
 
     def test_symlink_to_file_returns_resolved_path(self, tmp_path):
-        """A symlink to a regular file should return the resolved (canonical) path."""
         real_file = tmp_path / "real.txt"
         real_file.write_text("content")
         link_path = tmp_path / "link_to_real"
@@ -416,8 +393,6 @@ class TestSymlinkToSpecialFile:
         assert result[0] == real_file.resolve()
 
     def test_symlink_dedup_same_target(self, tmp_path):
-        """Two symlinks to the same file resolve to the same canonical path,
-        allowing dict.fromkeys dedup at the caller level."""
         real_file = tmp_path / "target.txt"
         real_file.write_text("content")
         link_a = tmp_path / "link_a"
@@ -426,7 +401,7 @@ class TestSymlinkToSpecialFile:
         link_b.symlink_to(real_file)
 
         result = resolve_file_patterns(["link_a", "link_b"], cwd=tmp_path)
-        assert len(result) == 2  # both symlinks produce entries
-        assert result[0] == result[1]  # but they resolve to the same path
+        assert len(result) == 2
+        assert result[0] == result[1]
         deduped = list(dict.fromkeys(str(p) for p in result))
-        assert len(deduped) == 1  # caller-level dedup works
+        assert len(deduped) == 1
