@@ -14,6 +14,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from sftp_parallel.batch import (
+    DEFAULT_IDLE_TIMEOUT,
     DEFAULT_TIMEOUT,
     sftp_escape,
     validate_filename,
@@ -25,7 +26,7 @@ from sftp_parallel.batch import (
 from sftp_parallel.pty_worker import PTYWorker
 from sftp_parallel.signals import (
     cleanup_signal_handlers,
-    setup_signal_handlers_v2,
+    setup_signal_handlers,
 )
 
 _PROCESS_KILL_WAIT_SECONDS = 5
@@ -198,7 +199,7 @@ def upload_files(
     port: int = 22,
     progress_callback: Callable[[str, int, int], None] | None = None,
     completion_callback: Callable[[str, bool], None] | None = None,
-    idle_timeout: int = 30,
+    idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
 ) -> tuple[bool, int]:
     """Upload files using PTY-based interactive SFTP with real-time progress.
 
@@ -222,7 +223,7 @@ def upload_files(
         Signature: ``callback(file_path, success)`` where *success* is
         ``True`` when the upload succeeded.
     idle_timeout:
-        Seconds without progress before killing SFTP process (default 30).
+        Seconds without progress before killing SFTP process (default 120).
 
     Returns
     -------
@@ -247,7 +248,7 @@ def upload_files(
     active_workers: list[PTYWorker] = []
     worker_lock = threading.Lock()
 
-    setup_signal_handlers_v2(active_workers, worker_lock)
+    setup_signal_handlers(active_workers, worker_lock)
     try:
         failed_count = 0
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
