@@ -316,6 +316,111 @@ class TestParallelUploadSignalHandlers:
             os.unlink(tmp_path)
 
 
+class TestParallelUploadTaskStart:
+    """Verify that progress tasks are created with start=False, visible=False
+    and that start_task + visible=True are called before worker.run()."""
+
+    @patch("sftp_parallel.upload.Worker")
+    def test_add_task_called_with_start_false_visible_false(self, mock_cls):
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            mock_worker = MagicMock()
+            mock_worker.run.return_value = WorkerResult(success=True, file_path=tmp_path)
+            mock_cls.return_value = mock_worker
+
+            progress = MagicMock(spec=Progress)
+            task_id = MagicMock()
+            progress.add_task.return_value = task_id
+
+            with progress:
+                parallel_upload(
+                    "user@host", [tmp_path], "/remote", progress,
+                    num_workers=1, port=22
+                )
+
+            add_task_call = progress.add_task.call_args
+            assert add_task_call.kwargs.get("start") is False
+            assert add_task_call.kwargs.get("visible") is False
+        finally:
+            os.unlink(tmp_path)
+
+    @patch("sftp_parallel.upload.Worker")
+    def test_start_task_and_visible_called_before_worker_run(self, mock_cls):
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            mock_worker = MagicMock()
+            mock_worker.run.return_value = WorkerResult(success=True, file_path=tmp_path)
+            mock_cls.return_value = mock_worker
+
+            progress = MagicMock(spec=Progress)
+            task_id = MagicMock()
+            progress.add_task.return_value = task_id
+
+            with progress:
+                parallel_upload(
+                    "user@host", [tmp_path], "/remote", progress,
+                    num_workers=1, port=22
+                )
+
+            progress.start_task.assert_called_once_with(task_id)
+            visible_call = [c for c in progress.update.call_args_list
+                           if c.kwargs.get("visible") is True]
+            assert len(visible_call) >= 1
+            assert any(c.args[0] == task_id for c in visible_call)
+        finally:
+            os.unlink(tmp_path)
+
+    @patch("sftp_parallel.upload.Worker")
+    def test_start_task_called_before_worker_run(self, mock_cls):
+        """Verify start_task is called before worker.run() in execution order."""
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            call_order = []
+
+            mock_worker = MagicMock()
+
+            def mock_run():
+                call_order.append("worker.run")
+                return WorkerResult(success=True, file_path=tmp_path)
+
+            mock_worker.run.side_effect = mock_run
+            mock_cls.return_value = mock_worker
+
+            progress = MagicMock(spec=Progress)
+            task_id = MagicMock()
+            progress.add_task.return_value = task_id
+
+            def mock_start_task(tid):
+                call_order.append("start_task")
+
+            def mock_update(*args, **kwargs):
+                if kwargs.get("visible") is True:
+                    call_order.append("visible_update")
+
+            progress.start_task.side_effect = mock_start_task
+            progress.update.side_effect = mock_update
+
+            with progress:
+                parallel_upload(
+                    "user@host", [tmp_path], "/remote", progress,
+                    num_workers=1, port=22
+                )
+
+            start_idx = call_order.index("start_task")
+            visible_idx = call_order.index("visible_update")
+            run_idx = call_order.index("worker.run")
+            assert start_idx < run_idx
+            assert visible_idx < run_idx
+        finally:
+            os.unlink(tmp_path)
+
+
 class TestParallelUploadWorkers:
     @patch("sftp_parallel.upload.Worker")
     def test_max_workers_capped_by_file_count(self, mock_cls):
