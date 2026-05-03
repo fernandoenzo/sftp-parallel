@@ -107,9 +107,11 @@ def add_file_task(
     progress: Progress,
     file_path: str,
     file_size: int,
+    *,
+    start: bool = True,
 ) -> TaskID:
     basename = os.path.basename(file_path)
-    task_id = progress.add_task(basename, total=file_size, visible=True, _success=None)
+    task_id = progress.add_task(basename, total=file_size, visible=True, start=start, _success=None)
     return task_id
 
 

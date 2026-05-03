@@ -38,7 +38,7 @@ def parallel_upload(
             size = os.path.getsize(fp)
         except OSError:
             size = 0
-        tasks[fp] = progress.add_task(name, total=max(size, 1), _success=None)
+        tasks[fp] = progress.add_task(name, total=max(size, 1), _success=None, start=False, visible=False)
 
     active_workers: list[Worker] = []
     worker_lock = threading.Lock()
@@ -74,6 +74,8 @@ def parallel_upload(
             with worker_lock:
                 active_workers.append(worker)
             try:
+                progress.start_task(task_id)
+                progress.update(task_id, visible=True)
                 result: WorkerResult = worker.run()
                 success = result.success
             except Exception:
