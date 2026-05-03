@@ -225,6 +225,37 @@ class TestParallelUploadCallback:
         finally:
             os.unlink(tmp_path)
 
+    @patch("sftp_parallel.upload.logger")
+    @patch("sftp_parallel.upload.Worker")
+    def test_callback_exception_logged(self, mock_cls, mock_logger):
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            mock_worker = MagicMock()
+            mock_worker.run.return_value = WorkerResult(success=True, file_path=tmp_path)
+            mock_cls.return_value = mock_worker
+
+            def failing_callback(fp, success):
+                raise ValueError("callback failure")
+
+            progress = Progress()
+            with progress:
+                parallel_upload(
+                    "user@host", [tmp_path], "/remote", progress,
+                    num_workers=1, port=22, completion_callback=failing_callback
+                )
+
+            assert mock_logger.debug.called
+            has_exc_info = any(
+                call.kwargs.get("exc_info", False) or
+                (len(call.args) > 2 and call.args[2] is True)
+                for call in mock_logger.debug.call_args_list
+            )
+            assert has_exc_info
+        finally:
+            os.unlink(tmp_path)
+
 
 class TestParallelUploadSignalHandlers:
     @patch("sftp_parallel.upload.signal")

@@ -368,17 +368,23 @@ class TestProcessOutput:
         worker._process_output("sftp> some trailing text")
         assert worker._prompt_count == 1
 
-    def test_idle_timer_not_reset_on_prompt(self) -> None:
+    def test_idle_timer_reset_on_any_output(self) -> None:
         worker = _make_worker()
         worker._last_progress_time = 100.0
         worker._process_output("sftp> \n")
-        assert worker._last_progress_time == 100.0
+        assert worker._last_progress_time > 100.0
 
     def test_formatted_bytes_kb_in_progress(self) -> None:
         worker = _make_worker()
         worker._file_size = 102400
         worker._process_output("test.bin  100%  100KB  14.5MB/s 00:00\r\n")
         assert worker._bytes_transferred == 102400
+
+    def test_connected_line_updates_progress_time(self) -> None:
+        worker = _make_worker()
+        worker._last_progress_time = 0
+        worker._process_output("Connected to host.\r\n")
+        assert worker._last_progress_time > 0
 
 
 class TestBuildSftpCmd:
@@ -472,6 +478,20 @@ class TestDetermineSuccess:
         worker._bytes_transferred = 10_000_000
         worker._error_message = "Something failed"
         assert worker._determine_success() is False
+
+    def test_bytes_override_prompts(self) -> None:
+        worker = _make_worker()
+        worker._file_size = 10_000_000
+        worker._bytes_transferred = 5_000_000
+        worker._prompt_count = 3
+        assert worker._determine_success() is False
+
+    def test_bytes_full_with_few_prompts(self) -> None:
+        worker = _make_worker()
+        worker._file_size = 10_000_000
+        worker._bytes_transferred = 10_000_000
+        worker._prompt_count = 2
+        assert worker._determine_success() is True
 
 
 class TestRun:
@@ -632,3 +652,79 @@ class TestAnsiEscapeRE:
     def test_no_ansi_unchanged(self) -> None:
         text = "plain text"
         assert _ANSI_ESCAPE_RE.sub("", text) == text
+
+
+class TestTerminateUrgent:
+    @patch("sftp_parallel.worker.os.waitpid")
+    @patch("sftp_parallel.worker.os.killpg")
+    def test_urgent_sends_sigkill(self, mock_killpg: MagicMock, mock_waitpid: MagicMock) -> None:
+        import signal as signal_mod
+        mock_waitpid.return_value = (1234, 0)
+        worker = _make_worker()
+        worker.pid = 1234
+        worker.terminate_urgent()
+        mock_killpg.assert_called_with(1234, signal_mod.SIGKILL)
+        assert worker._stop is True
+        assert worker.pid == 0
+
+    def test_urgent_no_pid(self) -> None:
+        worker = _make_worker()
+        worker.pid = 0
+        worker.terminate_urgent()
+        # Should not crash, just return
+
+
+class TestReapPid:
+    @patch("sftp_parallel.worker.os.waitpid")
+    def test_reap_pid_claims_and_reaps(self, mock_waitpid: MagicMock) -> None:
+        mock_waitpid.return_value = (1234, 0)
+        worker = _make_worker()
+        worker.pid = 1234
+        result = worker._reap_pid(1234)
+        assert result is True
+        assert worker.pid == 0
+
+    def test_reap_pid_already_claimed(self) -> None:
+        worker = _make_worker()
+        worker.pid = 0
+        result = worker._reap_pid(1234)
+        assert result is False
+
+    @patch("sftp_parallel.worker.os.waitpid", side_effect=ChildProcessError)
+    def test_reap_pid_handles_child_process_error(self, mock_waitpid: MagicMock) -> None:
+        worker = _make_worker()
+        worker.pid = 1234
+        result = worker._reap_pid(1234)
+        assert result is True
+        assert worker.pid == 0
+
+
+class TestSpawnFDs:
+    @patch("sftp_parallel.worker.os._exit")
+    @patch("sftp_parallel.worker.os.execvp")
+    @patch("sftp_parallel.worker.os.listdir")
+    @patch("sftp_parallel.worker.os.close")
+    @patch("sftp_parallel.worker.pty.fork")
+    def test_spawn_closes_fds_in_child(
+        self,
+        mock_fork: MagicMock,
+        mock_close: MagicMock,
+        mock_listdir: MagicMock,
+        mock_execvp: MagicMock,
+        mock_exit: MagicMock,
+    ) -> None:
+        # Simulate child process (pid == 0)
+        mock_fork.return_value = (0, 99)
+        mock_listdir.return_value = ["0", "1", "2", "3", "10"]
+        # Prevent actual execvp/exit from running
+        mock_execvp.side_effect = OSError("test mock")
+        mock_exit.side_effect = SystemExit(74)
+        worker = _make_worker()
+        try:
+            worker._spawn()
+        except (SystemExit, OSError):
+            pass
+        # In child process, close should be called for FDs > 2
+        fd_args = [call[0][0] for call in mock_close.call_args_list]
+        assert 3 in fd_args
+        assert 10 in fd_args

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sftp_parallel.lib import (
+    ChecksumResult,
     build_interactive_commands,
     compute_local_checksum,
     compute_remote_checksums,
@@ -317,6 +318,32 @@ class TestParseProgress:
         pct, transferred = result
         assert pct == 10
 
+    def test_progress_pib_suffix(self):
+        result = parse_progress("huge.bin  5% 1PiB 500MB/s 1:00:00")
+        assert result is not None
+        pct, transferred = result
+        assert pct == 5
+        assert transferred == 1125899906842624
+
+    def test_progress_pb_suffix(self):
+        result = parse_progress("big.bin  10% 1PB 100MB/s 00:30")
+        assert result is not None
+        pct, transferred = result
+        assert pct == 10
+        assert transferred == 1125899906842624
+
+    def test_progress_eib_suffix(self):
+        result = parse_progress("data.bin  5% 1.5EiB 1GB/s 01:00:00")
+        assert result is not None
+        assert result[0] == 5
+        assert result[1] >= 10**18
+
+    def test_speed_with_pib(self):
+        result = parse_progress("file.bin  20% 500GiB 1PiB/s 00:00")
+        assert result is not None
+        pct, transferred = result
+        assert pct == 20
+
 
 # --- _parse_formatted_bytes ---
 
@@ -348,6 +375,18 @@ class TestParseFormattedBytes:
 
     def test_zero(self):
         assert _parse_formatted_bytes("0") == 0
+
+    def test_parse_pib(self):
+        assert _parse_formatted_bytes("1PiB") == 1125899906842624
+
+    def test_parse_pb(self):
+        assert _parse_formatted_bytes("1PB") == 1125899906842624
+
+    def test_parse_eib(self):
+        assert _parse_formatted_bytes("1EiB") == 1152921504606846976
+
+    def test_parse_eb(self):
+        assert _parse_formatted_bytes("1EB") == 1152921504606846976
 
 
 # --- parse_ls_output ---
@@ -461,7 +500,9 @@ class TestComputeLocalChecksum:
 class TestComputeRemoteChecksums:
     def test_empty_filenames(self):
         result = compute_remote_checksums("user@host", "/remote", [])
-        assert result is None
+        assert isinstance(result, ChecksumResult)
+        assert result.data is None
+        assert result.error is None
 
     def test_invalid_host(self):
         with pytest.raises(ValueError):
@@ -486,13 +527,36 @@ class TestComputeRemoteChecksums:
         mock_result.returncode = 1  # Non-zero but partial results exist
         mock_run.return_value = mock_result
         result = compute_remote_checksums("user@host", "/remote", ["a.txt"], port=22)
-        assert result == {"a.txt": "hash1"}
+        assert isinstance(result, ChecksumResult)
+        assert result.data == {"a.txt": "hash1"}
+        assert result.error is None
 
     @patch("sftp_parallel.lib.subprocess.run")
     def test_ssh_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired("ssh", 30)
         result = compute_remote_checksums("user@host", "/remote", ["a.txt"], port=22)
-        assert result is None
+        assert isinstance(result, ChecksumResult)
+        assert result.data is None
+        assert result.error is not None
+        assert "timeout" in result.error
+
+    @patch("sftp_parallel.lib.subprocess.run")
+    def test_ssh_not_found(self, mock_run):
+        mock_run.side_effect = FileNotFoundError
+        result = compute_remote_checksums("user@host", "/remote", ["a.txt"], port=22)
+        assert isinstance(result, ChecksumResult)
+        assert result.data is None
+        assert result.error == "ssh binary not found"
+
+    @patch("sftp_parallel.lib.subprocess.run")
+    def test_oserror_permission_denied(self, mock_run):
+        import errno
+        mock_run.side_effect = OSError(errno.EACCES, "Permission denied")
+        result = compute_remote_checksums("user@host", "/remote", ["a.txt"], port=22)
+        assert isinstance(result, ChecksumResult)
+        assert result.data is None
+        assert result.error is not None
+        assert "permission denied" in result.error.lower()
 
 
 # --- get_remote_file_sizes ---
