@@ -14,7 +14,12 @@ from sftp_parallel.lib import (
 )
 from sftp_parallel.upload import parallel_upload
 
-__version__ = "0.1.0"
+try:
+    from importlib.metadata import version as _version
+
+    __version__ = _version("sftp-parallel")
+except Exception:
+    __version__ = "0.0.0"
 
 __all__ = [
     "__version__",

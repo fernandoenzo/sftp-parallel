@@ -58,10 +58,12 @@ class _StatusColumn(ProgressColumn):
 
     def render(self, task: Task) -> Text:
         if task.finished:
-            desc = task.description or ""
-            if desc.startswith("[green]") or desc.startswith("[bold green]"):
+            success = task.fields.get("_success")
+            if success is True:
                 return Text("✓", style="bold green")
-            return Text("✗", style="bold red")
+            if success is False:
+                return Text("✗", style="bold red")
+            return Text("·", style="dim")
         return Text(str(self._spinner.render(task)))
 
 
@@ -107,7 +109,7 @@ def add_file_task(
     file_size: int,
 ) -> TaskID:
     basename = os.path.basename(file_path)
-    task_id = progress.add_task(basename, total=file_size, visible=True)
+    task_id = progress.add_task(basename, total=file_size, visible=True, _success=None)
     return task_id
 
 
@@ -131,12 +133,14 @@ def complete_file_task(
         progress.update(
             task_id,
             completed=file_progress.file_size,
-            description=f"[green]{os.path.basename(file_progress.file_path)}[/green] ({elapsed:.1f}s)",
+            description=f"{os.path.basename(file_progress.file_path)} ({elapsed:.1f}s)",
+            _success=True,
         )
         progress.stop_task(task_id)
     else:
         progress.update(
             task_id,
-            description=f"[red]{os.path.basename(file_progress.file_path)}[/red]",
+            description=f"✗ {os.path.basename(file_progress.file_path)}",
+            _success=False,
         )
         progress.stop_task(task_id)

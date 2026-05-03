@@ -5,7 +5,7 @@ description = "Parallel SFTP uploader with verification"
 requires-python = ">=3.13"
 license = "GPL-3.0"
 dependencies = [
-    "rich",
+    "rich>=15.0.0,<16",
 ]
 
 [project.optional-dependencies]
