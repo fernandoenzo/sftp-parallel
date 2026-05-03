@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import sys
@@ -12,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from rich.progress import Progress, TaskID
 
 from sftp_parallel.worker import Worker, WorkerResult
+
+logger = logging.getLogger(__name__)
 
 
 def parallel_upload(
@@ -35,7 +38,7 @@ def parallel_upload(
             size = os.path.getsize(fp)
         except OSError:
             size = 0
-        tasks[fp] = progress.add_task(name, total=max(size, 1))
+        tasks[fp] = progress.add_task(name, total=max(size, 1), _success=None)
 
     active_workers: list[Worker] = []
     worker_lock = threading.Lock()
@@ -50,7 +53,7 @@ def parallel_upload(
         with worker_lock:
             snapshot = list(active_workers)
         for w in snapshot:
-            w.terminate()
+            w.terminate_urgent()
         sys.exit(128 + signum)
 
     signal.signal(signal.SIGINT, _handle_signal)
@@ -81,12 +84,18 @@ def parallel_upload(
                         active_workers.remove(worker)
 
             if success:
-                try:
-                    progress.update(task_id, completed=os.path.getsize(fp))
-                except OSError:
-                    progress.update(task_id, completed=progress.tasks[task_id].total)
+                progress.update(
+                    task_id,
+                    description=os.path.basename(fp),
+                    completed=os.path.getsize(fp),
+                    _success=True,
+                )
             else:
-                progress.update(task_id, description=f"✗ {os.path.basename(fp)}")
+                progress.update(
+                    task_id,
+                    description=f"✗ {os.path.basename(fp)}",
+                    _success=False,
+                )
 
             nonlocal ok_count, fail_count
             with count_lock:
@@ -99,7 +108,7 @@ def parallel_upload(
                 try:
                     completion_callback(fp, success)
                 except Exception:
-                    pass
+                    logger.debug("Completion callback failed for %s", fp, exc_info=True)
 
             return success
 
