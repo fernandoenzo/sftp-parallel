@@ -90,11 +90,11 @@ def create_upload_progress(
     progress = Progress(
         _StatusColumn(),
         TextColumn("{task.description}"),
-        BarColumn(),
+        BarColumn(bar_width=30),
+        TextColumn("{task.percentage:>3.0f}%"),
         _BinaryDownloadColumn(),
         TransferSpeedColumn(),
         TimeElapsedColumn(),
-        TextColumn("• {task.percentage:>3.0f}%"),
         disable=disable,
     )
 
