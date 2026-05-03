@@ -148,6 +148,7 @@ class Worker:
                 file_path=self.file_path,
                 error_message=f"Failed to spawn sftp process: {exc}",
             )
+        self._last_progress_time = time.monotonic()
         try:
             return self._loop()
         finally:
@@ -157,6 +158,29 @@ class Worker:
         """Kill the worker process.  Idempotent, safe from any thread."""
         self._stop = True
         self._kill_process()
+
+    def terminate_urgent(self) -> None:
+        """Kill the worker process immediately. Used from signal handlers."""
+        self._stop = True
+        if self.pid <= 0:
+            return
+        pid = self.pid
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        self._reap_pid(pid)
+
+    def _reap_pid(self, pid: int) -> bool:
+        """Atomically claim and reap a child PID.  Returns True if this thread reaped it."""
+        if self.pid == pid and pid > 0:
+            self.pid = 0
+            try:
+                os.waitpid(pid, 0)
+            except (ChildProcessError, OSError):
+                pass
+            return True
+        return False
 
     def _spawn(self) -> None:
         """Fork a child SFTP process via pty.fork()."""
@@ -169,6 +193,23 @@ class Worker:
         if pid == 0:
             os.environ["LC_ALL"] = "C"
             os.environ["LC_NUMERIC"] = "C"
+            try:
+                for fd_str in os.listdir("/proc/self/fd"):
+                    fd = int(fd_str)
+                    if fd > 2:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
+            except (FileNotFoundError, OSError, ValueError):
+                try:
+                    max_fd = os.sysconf("SC_OPEN_MAX")
+                except (ValueError, OSError):
+                    max_fd = 1024
+                try:
+                    os.closerange(3, max_fd)
+                except OSError:
+                    pass
             os.execvp("sftp", sftp_args)
             os._exit(74)
 
@@ -204,7 +245,6 @@ class Worker:
         cmd_idx = 0
         prompt_seen = False
         start_time = time.monotonic()
-        last_progress_time = 0.0
 
         while not self._stop:
             try:
@@ -223,7 +263,7 @@ class Worker:
                 self._error_message = f"SFTP connection timed out after {self.connect_timeout + 30}s"
                 break
 
-            if self._bytes_transferred > 0 and last_progress_time > 0 and now - last_progress_time > self.idle_timeout:
+            if prompt_seen and self._last_progress_time > 0 and now - self._last_progress_time > self.idle_timeout:
                 self._error_message = f"Transfer stalled: no progress for {self.idle_timeout}s"
                 break
 
@@ -241,7 +281,13 @@ class Worker:
 
                 encoding = locale.getpreferredencoding(False) or "utf-8"
                 text = data.decode(encoding, errors="replace")
+                prev_prompt_count = self._prompt_count
                 self._process_output(text)
+
+                # Detect when an sftp> prompt has been seen in the output
+                if not prompt_seen and self._prompt_count > prev_prompt_count:
+                    prompt_seen = True
+                    self._last_progress_time = time.monotonic()
 
                 if self._error_message:
                     break
@@ -265,11 +311,14 @@ class Worker:
         if self._error_message:
             return False
         if self._file_size > 0:
-            return self._bytes_transferred == self._file_size
+            return self._bytes_transferred >= self._file_size
+        # 0-byte files: use prompt heuristic
         return self._prompt_count >= 3
 
     def _process_output(self, text: str) -> None:
-        """Process raw text from the PTY, splitting on \\r and \\n."""
+        """Process raw text from the PTY, splitting on \r and \n."""
+        if text:
+            self._last_progress_time = time.monotonic()
         segments = self._split_lines(text)
 
         for segment in segments:
@@ -367,22 +416,18 @@ class Worker:
             try:
                 pid_, _status = os.waitpid(pid, os.WNOHANG)
                 if pid_ != 0:
+                    self.pid = 0
                     break
             except ChildProcessError:
+                self.pid = 0
                 break
             time.sleep(0.2)
-
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass
-
-        try:
-            os.waitpid(pid, 0)
-        except ChildProcessError:
-            pass
-
-        self.pid = 0
+        else:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+            self._reap_pid(pid)
 
     def _cleanup(self) -> None:
         """Close the PTY master fd and reap the child process."""
@@ -394,8 +439,4 @@ class Worker:
             self.master_fd = -1
 
         if self.pid > 0:
-            try:
-                os.waitpid(self.pid, 0)
-            except (ChildProcessError, OSError):
-                pass
-            self.pid = 0
+            self._reap_pid(self.pid)
