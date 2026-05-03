@@ -9,6 +9,7 @@ from rich.console import Console
 
 from sftp_parallel import __version__
 from sftp_parallel.lib import (
+    ChecksumResult,
     compute_local_checksum,
     compute_remote_checksums,
     get_remote_file_sizes,
@@ -275,20 +276,18 @@ def main(argv: list[str] | None = None) -> None:
         basenames = [os.path.basename(fp) for fp in verify_paths]
         console.print("Upload complete")
         console.print("Verifying checksums...")
-        remote_checksums = compute_remote_checksums(
+        result = compute_remote_checksums(
             args.server,
             remote_dir,
             basenames,
             port=args.port,
         )
-        if remote_checksums is None:
-            remote_checksums = {}
-        if not remote_checksums and basenames:
-            console.print(
-                "[yellow]Warning: Could not retrieve remote checksums"
-                " (validation error or SSH failure?)."
-                " Verification may be unreliable.[/yellow]"
-            )
+        if isinstance(result, ChecksumResult):
+            if result.error is not None:
+                console.print(f"[yellow]Warning: {result.error}[/yellow]")
+            remote_checksums = result.data or {}
+        else:
+            remote_checksums = result if result is not None else {}
         matched: list[str] = []
         mismatched: list[str] = []
         for fp in verify_paths:

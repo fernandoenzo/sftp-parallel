@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import logging
 import os
 import re
 import shlex
 import subprocess
 import unicodedata
 import warnings
+from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 _MAX_FILENAME_LENGTH = 255
 DEFAULT_TIMEOUT = 10
@@ -130,9 +135,9 @@ def build_interactive_commands(remote_dir: str, file_path: str) -> list[str]:
 _PROGRESS_RE = re.compile(
     r"(\d{1,3})%"
     r"\s+"
-    r"(\d+(?:[.,]\d+)?(?:[KMGT]?i?B)?)"
+    r"(\d+(?:[.,]\d+)?(?:[EKMGTP]?i?B)?)"
     r"\s+"
-    r"[\d.,]+[KMGT]?i?B/s"
+    r"[\d.,]+[EKMGTP]?i?B/s"
     r"\s+"
     r"(?:"
     r"\d+:\d{2}:\d{2}|"
@@ -159,6 +164,8 @@ _UNIT_MULTIPLIERS: dict[str, int] = {
     "TiB": 1024 ** 4,
     "PB": 1024 ** 5,
     "PiB": 1024 ** 5,
+    "EB": 1024 ** 6,
+    "EiB": 1024 ** 6,
 }
 
 
@@ -168,6 +175,19 @@ def _parse_formatted_bytes(value: str) -> int:
             num_str = value[: -len(suffix)].replace(",", ".")
             return int(float(num_str) * _UNIT_MULTIPLIERS[suffix])
     return int(value)
+
+
+@dataclass
+class ChecksumResult:
+    """Result of a remote checksum computation.
+
+    Attributes:
+        data: Mapping of filename → checksum, or None if unavailable.
+        error: Human-readable error string, or None if no error.
+    """
+
+    data: dict[str, str] | None
+    error: str | None
 
 
 def parse_progress(line: str) -> tuple[int, int] | None:
@@ -216,7 +236,7 @@ def compute_remote_checksums(
     algorithm: str = "sha256",
     timeout: int = 10,
     port: int = 22,
-) -> dict[str, str] | None:
+) -> ChecksumResult:
     validate_host(host)
     validate_remote_dir(remote_dir)
     validate_port(port)
@@ -228,7 +248,7 @@ def compute_remote_checksums(
         )
 
     if not filenames:
-        return None
+        return ChecksumResult(data=None, error=None)
 
     for fn in filenames:
         if not validate_filename(fn):
@@ -262,10 +282,19 @@ def compute_remote_checksums(
             text=True,
             timeout=dynamic_timeout,
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    except subprocess.TimeoutExpired:
+        return ChecksumResult(
+            data=None,
+            error=f"timeout: remote host did not respond within {dynamic_timeout}s",
+        )
+    except FileNotFoundError:
+        return ChecksumResult(data=None, error="ssh binary not found")
+    except OSError as exc:
+        if exc.errno == errno.EACCES:
+            return ChecksumResult(data=None, error=f"permission denied: {exc}")
+        return ChecksumResult(data=None, error=f"SSH connection failed: {exc}")
 
-    return parse_checksum_output(result.stdout)
+    return ChecksumResult(data=parse_checksum_output(result.stdout), error=None)
 
 
 def verify_uploads(
@@ -277,11 +306,17 @@ def verify_uploads(
     timeout: int = 10,
     port: int = 22,
 ) -> tuple[list[str], list[str]]:
-    remote_checksums = compute_remote_checksums(
+    remote_result = compute_remote_checksums(
         host, remote_dir, local_files, algorithm=algorithm, timeout=timeout, port=port
     )
-    if remote_checksums is None:
+    if isinstance(remote_result, ChecksumResult):
+        if remote_result.error is not None:
+            logger.warning("Remote checksum check failed: %s", remote_result.error)
+        remote_checksums = remote_result.data or {}
+    elif remote_result is None:
         remote_checksums = {}
+    else:
+        remote_checksums = remote_result
     matched: list[str] = []
     mismatched: list[str] = []
     for filename in local_files:
