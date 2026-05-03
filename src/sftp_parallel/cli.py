@@ -1,62 +1,39 @@
-"""CLI module for sftp-parallel — flat interface with named flags."""
+"""CLI module for sftp-parallel."""
 
 import argparse
 import os
 import sys
-import threading
-import time
 from pathlib import Path
 
 from rich.console import Console
-from rich.progress import TaskID
 
 from sftp_parallel import __version__
-from sftp_parallel.batch import (
+from sftp_parallel.lib import (
+    compute_local_checksum,
+    compute_remote_checksums,
+    get_remote_file_sizes,
     validate_filename,
     validate_host,
     validate_port,
     validate_remote_dir,
 )
-from sftp_parallel.progress import (
-    FileProgress,
-    add_worker_task,
-    complete_worker_task,
-    create_upload_progress_v2,
-    update_worker_progress,
-)
-from sftp_parallel.uploader import (
-    get_remote_file_sizes,
-    upload_files,
-)
-from sftp_parallel.verify import compute_local_checksum, compute_remote_checksums
+from sftp_parallel.progress import create_upload_progress
+from sftp_parallel.upload import parallel_upload
 
 console = Console()
 
 
 def _resolve_one(path: Path) -> Path | None:
-    """Accept regular files and symlinks to regular files; skip everything else.
-
-    Returns a resolved Path (via ``.resolve()``) for accepted files, ensuring
-    symlink deduplication works correctly at the caller level.
-
-    - Regular file → return resolved path (after filename validation)
-    - Symlink to regular file → return resolved path (is_file follows symlinks)
-    - Symlink to directory → silent None (no warning)
-    - Symlink to special/broken → warning + None
-    - Directory or nonexistent → silent None (caller decides on warning)
-    """
-    if path.is_file():  # follows symlinks → True for symlink→file
+    if path.is_file():
         if not validate_filename(path.name):
             console.print(f"[yellow]Skipping unsafe filename:[/yellow] {path.name}")
             return None
         return path.resolve()
-    if path.is_symlink():  # not a file → broken, dir, or special
-        if path.is_dir():  # symlink → directory: silent skip
+    if path.is_symlink():
+        if path.is_dir():
             return None
-        # symlink → broken or special (FIFO, socket, etc.)
         console.print(f"[yellow]Skipping symlink to non-regular file:[/yellow] {path.name}")
         return None
-    # regular dir or nonexistent → silent skip (caller decides whether to warn)
     return None
 
 
@@ -64,23 +41,6 @@ def resolve_file_patterns(
     patterns: list[str],
     cwd: Path | None = None,
 ) -> list[Path]:
-    """Resolve file patterns (globs and literals) into sorted ``Path`` objects.
-
-    For each pattern:
-
-    1. If the literal path exists, use it directly.
-    2. If it contains glob characters (``*``, ``?``, ``[``) and the literal
-       doesn't exist, expand as a glob.
-    3. If it has no glob characters and doesn't exist, print a warning.
-
-    When no patterns are provided (i.e. the user passed ``-f *.mp4`` and
-    the shell expanded it), all regular files in *cwd* are returned.
-
-    Note
-    ----
-    Glob patterns (those with ``**``) are recursive.  Single-star patterns
-    (``*.txt``) match only the immediate directory.
-    """
     base = Path(cwd or Path.cwd())
     result: list[Path] = []
 
@@ -108,11 +68,6 @@ def resolve_file_patterns(
 
 
 def validate_basename_uniqueness(file_paths: list[Path]) -> None:
-    """Raise ``ValueError`` if any two paths share the same basename.
-
-    SFTP uploads place files by basename in a single remote directory,
-    so two files with the same basename would silently overwrite each other.
-    """
     seen: dict[str, Path] = {}
     for p in file_paths:
         name = p.name
@@ -207,35 +162,26 @@ def main(argv: list[str] | None = None) -> None:
     if args.dest == "":
         parser.error("--dest cannot be empty")
 
-    _handle_upload(args)
-
-
-def _handle_upload(args: argparse.Namespace) -> None:
-    # 1. Validate host
     try:
         validate_host(args.server)
     except ValueError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(2)
 
-    # 2. Validate port
     try:
         validate_port(args.port)
     except ValueError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(2)
 
-    # 2.5. Validate remote_dir
     try:
         validate_remote_dir(args.dest)
     except ValueError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")
         sys.exit(2)
 
-    # 3. Resolve and deduplicate file patterns
     file_paths = list(dict.fromkeys(resolve_file_patterns(args.files)))
 
-    # 4. Check for duplicate basenames
     try:
         validate_basename_uniqueness(file_paths)
     except ValueError as exc:
@@ -246,17 +192,11 @@ def _handle_upload(args: argparse.Namespace) -> None:
         console.print("[yellow]No files found matching the specified patterns.[/yellow]")
         sys.exit(0)
 
-    # 5. Convert to strings
     file_paths_str = [str(p) for p in file_paths]
-
-    # 6. Get remote_dir
     remote_dir = args.dest
 
-    # 7. Skip-existing logic
     if args.skip_existing:
-        remote_sizes = get_remote_file_sizes(
-            args.server, remote_dir, port=args.port
-        )
+        remote_sizes = get_remote_file_sizes(args.server, remote_dir, port=args.port)
         if remote_sizes is None:
             remote_sizes = {}
         need_upload: list[str] = []
@@ -288,12 +228,9 @@ def _handle_upload(args: argparse.Namespace) -> None:
                 " could not be checked -- will attempt upload[/yellow]"
             )
         if not need_upload:
-            console.print(
-                "[bold green]All files already exist on remote.[/bold green]"
-            )
+            console.print("[bold green]All files already exist on remote.[/bold green]")
             if not args.verify:
                 sys.exit(0)
-        # TOCTOU guard: re-check files still exist before upload
         if need_upload:
             validated: list[str] = []
             for fp in need_upload:
@@ -308,44 +245,24 @@ def _handle_upload(args: argparse.Namespace) -> None:
         else:
             file_paths_str = need_upload
 
-    # 8. Upload with progress
     total_files = len(file_paths_str)
-    with create_upload_progress_v2(
+    with create_upload_progress(
         total_files, args.server, remote_dir,
-        num_workers=min(args.threads, total_files),
+        num_workers=min(args.threads, total_files) if total_files else args.threads,
         disable=args.no_progress,
     ) as progress:
-        # Map of file paths to (Rich TaskID, FileProgress, start_time)
-        task_map: dict[str, tuple[TaskID, FileProgress, float]] = {}
-        task_map_lock = threading.Lock()
-
-        def progress_callback(file_path: str, bytes_transferred: int, total_bytes: int) -> None:
-            with task_map_lock:
-                if file_path not in task_map:
-                    task_id = add_worker_task(progress, file_path, max(total_bytes, 1))
-                    fp = FileProgress(file_path=file_path, file_size=max(total_bytes, 1))
-                    task_map[file_path] = (task_id, fp, time.monotonic())
-                task_id, fp, _ = task_map[file_path]
-            update_worker_progress(progress, task_id, bytes_transferred, fp)
-
-        def completion_callback(file_path: str, success: bool) -> None:
-            with task_map_lock:
-                if file_path in task_map:
-                    task_id, fp, start_time = task_map[file_path]
-                    elapsed = time.monotonic() - start_time
-                    complete_worker_task(progress, task_id, fp, success, elapsed)
-                    del task_map[file_path]
-
-        all_success, failed_count = upload_files(
+        ok_count, fail_count = parallel_upload(
             args.server,
             file_paths_str,
             remote_dir,
-            num_workers=args.threads,
+            progress,
+            num_workers=min(args.threads, total_files) if total_files else args.threads,
             port=args.port,
-            progress_callback=progress_callback,
-            completion_callback=completion_callback,
             idle_timeout=args.idle_timeout,
         )
+
+    all_success = fail_count == 0
+    failed_count = fail_count
 
     if total_files > 1:
         if failed_count == 0:
@@ -353,7 +270,6 @@ def _handle_upload(args: argparse.Namespace) -> None:
         else:
             console.print(f"[bold red]Failed[/bold red] — {failed_count}/{total_files} files failed, {total_files - failed_count} succeeded")
 
-    # 10. Report result + optional verification
     if args.verify:
         verify_paths = file_paths_str
         basenames = [os.path.basename(fp) for fp in verify_paths]
