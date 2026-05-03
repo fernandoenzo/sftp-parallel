@@ -85,7 +85,7 @@ Run tests with pytest:
 python3 -m pytest tests/ -v
 ```
 
-260 tests. All tests mock subprocess/PTY calls to avoid requiring real SSH connections.
+All tests mock subprocess/PTY calls to avoid requiring real SSH connections.
 
 ## Exit Codes
 
