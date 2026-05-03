@@ -132,10 +132,15 @@ def complete_file_task(
     elapsed: float,
 ) -> None:
     if success:
+        if elapsed > 0:
+            avg_speed = _format_binary_size(file_progress.file_size / elapsed) + "/s"
+            description = f"{os.path.basename(file_progress.file_path)} ({elapsed:.1f}s · avg {avg_speed})"
+        else:
+            description = f"{os.path.basename(file_progress.file_path)} ({elapsed:.1f}s)"
         progress.update(
             task_id,
             completed=file_progress.file_size,
-            description=f"{os.path.basename(file_progress.file_path)} ({elapsed:.1f}s)",
+            description=description,
             _success=True,
         )
         progress.stop_task(task_id)
