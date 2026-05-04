@@ -15,7 +15,6 @@ from rich.progress import (
     TaskID,
     TextColumn,
     TimeElapsedColumn,
-    TransferSpeedColumn,
 )
 from rich.text import Text
 
@@ -48,6 +47,16 @@ class _BinaryDownloadColumn(ProgressColumn):
             total_text = _format_binary_size(total)
             return Text(f"{completed_text}/{total_text}", style="progress.download")
         return Text(_format_binary_size(completed), style="progress.download")
+
+
+class _BinarySpeedColumn(ProgressColumn):
+    """Transfer speed using binary units (KiB/s, MiB/s, etc.)."""
+
+    def render(self, task: Task) -> Text:
+        speed = task.speed
+        if speed is None or speed <= 0:
+            return Text("", style="blue")
+        return Text(_format_binary_size(speed) + "/s", style="blue")
 
 
 class _StatusColumn(ProgressColumn):
@@ -93,7 +102,7 @@ def create_upload_progress(
         BarColumn(bar_width=30),
         TextColumn("{task.percentage:>3.0f}%"),
         _BinaryDownloadColumn(),
-        TransferSpeedColumn(),
+        _BinarySpeedColumn(),
         TimeElapsedColumn(),
         disable=disable,
     )
