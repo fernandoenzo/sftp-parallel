@@ -207,26 +207,40 @@ class TestSftpEscape:
 
 
 class TestEscapeInteractive:
-    def test_no_escape(self):
-        assert escape_interactive("/tmp/file.txt") == "/tmp/file.txt"
+    def test_escape_interactive_simple(self):
+        assert escape_interactive("/tmp/file.txt") == '"/tmp/file.txt"'
 
-    def test_space(self):
-        assert escape_interactive("/tmp/my file.txt") == "/tmp/my\\ file.txt"
+    def test_escape_interactive_spaces(self):
+        assert escape_interactive("/tmp/my file.txt") == '"/tmp/my file.txt"'
 
-    def test_backslash(self):
-        assert escape_interactive("C:\\Users") == "C:\\\\Users"
+    def test_escape_interactive_backslash(self):
+        assert escape_interactive("a\\b") == '"a\\\\b"'
 
-    def test_double_quote(self):
-        assert escape_interactive('say "hello"') == 'say\\ \\"hello\\"'
+    def test_escape_interactive_double_quotes(self):
+        assert escape_interactive('say "hello"') == '"say \\"hello\\""'
 
-    def test_single_quote(self):
-        assert escape_interactive("it's") == "it\\'s"
+    def test_escape_interactive_single_quotes(self):
+        """Single quotes do NOT need escaping inside double quotes."""
+        assert escape_interactive("it's") == '"it\'s"'
 
-    def test_multiple_special_chars(self):
-        assert escape_interactive("my file.txt") == "my\\ file.txt"
+    def test_escape_interactive_spaces_in_filename(self):
+        assert escape_interactive("my file.txt") == '"my file.txt"'
 
-    def test_already_escaped_backslash(self):
-        assert escape_interactive("a\\b") == "a\\\\b"
+    def test_escape_interactive_glob_star(self):
+        assert escape_interactive("file*.txt") == '"file\\*.txt"'
+
+    def test_escape_interactive_glob_question(self):
+        assert escape_interactive("file?.txt") == '"file\\?.txt"'
+
+    def test_escape_interactive_glob_bracket(self):
+        assert escape_interactive("file[0].txt") == '"file\\[0].txt"'
+
+    def test_escape_interactive_glob_brace(self):
+        assert escape_interactive("file{1,2}.txt") == '"file\\{1,2}.txt"'
+
+    def test_escape_interactive_combined(self):
+        """Path with spaces, backslash, and glob characters."""
+        assert escape_interactive('/tmp/my dir/file*.txt') == '"/tmp/my dir/file\\*.txt"'
 
 
 # --- _validate_sftp_path ---
@@ -261,8 +275,8 @@ class TestBuildInteractiveCommands:
 
     def test_path_with_spaces(self):
         cmds = build_interactive_commands("/my uploads", "my file.mp4")
-        assert "\\ " in cmds[0]
-        assert "\\ " in cmds[1]
+        assert cmds[0] == 'cd "/my uploads"'
+        assert cmds[1] == 'put -f "my file.mp4"'
 
     def test_control_char_rejected(self):
         with pytest.raises(ValueError, match="control character"):

@@ -104,11 +104,17 @@ def sftp_escape(path: str) -> str:
 
 
 def escape_interactive(path: str) -> str:
-    result = path.replace("\\", "\\\\")
-    result = result.replace('"', '\\"')
-    result = result.replace("'", "\\'")
-    result = result.replace(" ", "\\ ")
-    return result
+    """Escape a path for sftp interactive mode using double-quote wrapping.
+
+    sftp requires paths with spaces to be enclosed in double quotes.
+    Backslashes and double quotes within the path are escaped.
+    Glob characters (*, ?, [, {) are also escaped with backslash as per sftp man page.
+    """
+    escaped = path.replace("\\", "\\\\")
+    escaped = escaped.replace('"', '\\"')
+    for ch in ("*", "?", "[", "{"):
+        escaped = escaped.replace(ch, f"\\{ch}")
+    return f'"{escaped}"'
 
 
 def _validate_sftp_path(path: str, label: str = "path") -> None:
